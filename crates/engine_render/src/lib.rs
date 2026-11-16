@@ -29,6 +29,7 @@ mod scene;
 mod screenshot;
 mod shaders;
 mod shadows;
+mod skin;
 mod snapshot;
 mod sprites;
 mod text;
@@ -53,6 +54,7 @@ pub use post::{
 pub use shadows::{
     RENDER_SHADOW_DEBUG, RENDER_SHADOW_DISTANCE, RENDER_SHADOW_SIZE, RENDER_SHADOWS,
 };
+pub use skin::{RENDER_SKIN_BUDGET_MB, RENDER_SKIN_COMPUTE};
 pub use ui::{DEBUG_UI, Ui};
 
 /// Сохраняет снимок в PNG (только native — на Web файловой системы нет).

@@ -13,6 +13,7 @@ pub(crate) const EMBEDDED: &[(&str, &str)] = &[
     ("shaders/common.wgsl", include_str!("shaders/common.wgsl")),
     ("shaders/post.wgsl", include_str!("shaders/post.wgsl")),
     ("shaders/mesh.wgsl", include_str!("shaders/mesh.wgsl")),
+    ("shaders/skin.wgsl", include_str!("shaders/skin.wgsl")),
     ("shaders/pbr.wgsl", include_str!("shaders/pbr.wgsl")),
     ("shaders/shadow.wgsl", include_str!("shaders/shadow.wgsl")),
     ("shaders/debug.wgsl", include_str!("shaders/debug.wgsl")),

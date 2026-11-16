@@ -127,6 +127,8 @@ pub struct RenderStats {
     pub drawn: u64,
     pub draw_calls: u64,
     pub culled: u64,
+    /// Скелетных примитивов, посчитанных compute-скиннингом. 0 — вершинный шейдер.
+    pub skin_compute: u64,
     /// Время GPU проходов: сцена и интерфейс. `None` — нет данных (метки не поддерживаются
     /// или проход не выполнялся).
     /// Карты теней (все каскады).
@@ -229,7 +231,9 @@ fn register_cvars(app: &mut App) {
         .register_cvar(&crate::shadows::RENDER_SHADOW_SIZE)
         .register_cvar(&crate::shadows::RENDER_SHADOW_DISTANCE)
         .register_cvar(&crate::shadows::RENDER_SHADOW_DEBUG)
-        .register_cvar(&crate::lights::RENDER_LOCAL_SHADOW_SIZE);
+        .register_cvar(&crate::lights::RENDER_LOCAL_SHADOW_SIZE)
+        .register_cvar(&crate::skin::RENDER_SKIN_COMPUTE)
+        .register_cvar(&crate::skin::RENDER_SKIN_BUDGET_MB);
 }
 
 impl Plugin for RenderPlugin {
@@ -462,6 +466,7 @@ fn update_stats(frontend: NonSend<RenderFrontend>, mut stats: ResMut<RenderStats
     stats.gpu_post_time = micros(s.gpu_post_us.load(Ordering::Relaxed));
     stats.gpu_ui_time = micros(s.gpu_ui_us.load(Ordering::Relaxed));
     stats.culled = s.culled.load(Ordering::Relaxed);
+    stats.skin_compute = s.skin_compute.load(Ordering::Relaxed);
     stats.gpu_meshes = s.gpu_meshes.load(Ordering::Relaxed);
     stats.gpu_textures = s.gpu_textures.load(Ordering::Relaxed);
     stats.gpu_bytes = s.gpu_bytes.load(Ordering::Relaxed);

@@ -33,6 +33,7 @@ fn vs_main(in: VertexInput, inst: ShadowInstanceInput) -> ShadowOutput {
     return out;
 }
 
+#ifndef PRESKINNED
 @vertex
 fn vs_skinned(
     in: VertexInput,
@@ -49,6 +50,44 @@ fn vs_skinned(
     out.uv = in.uv;
     return out;
 }
+#endif
+
+// Та же уже посчитанная вершина, что у сцены. Маска читает UV исходного меша.
+#ifdef PRESKINNED
+struct UvInput {
+    @location(2) uv: vec2<f32>,
+};
+
+fn preskinned_clip(model: mat4x4<f32>, vertex_index: u32, base: u32) -> vec4<f32> {
+    let posed = skinned_vertices[base + vertex_index];
+    return shadow_view.view_proj * model * vec4<f32>(posed.position.xyz, 1.0);
+}
+
+@vertex
+fn vs_preskinned(
+    inst: ShadowInstanceInput,
+    @builtin(vertex_index) vertex_index: u32,
+    @location(13) joint_offset: vec4<u32>,
+) -> ShadowOutput {
+    var out: ShadowOutput;
+    out.clip_position = preskinned_clip(shadow_model(inst), vertex_index, joint_offset.y);
+    out.uv = vec2<f32>(0.0);
+    return out;
+}
+
+@vertex
+fn vs_preskinned_masked(
+    uv_in: UvInput,
+    inst: ShadowInstanceInput,
+    @builtin(vertex_index) vertex_index: u32,
+    @location(13) joint_offset: vec4<u32>,
+) -> ShadowOutput {
+    var out: ShadowOutput;
+    out.clip_position = preskinned_clip(shadow_model(inst), vertex_index, joint_offset.y);
+    out.uv = uv_in.uv;
+    return out;
+}
+#endif
 
 // Альфа-маска (листья, решётки): дырки в материале — дырки и в тени.
 // Непрозрачным объектам фрагментный шейдер не нужен — пишется только глубина.

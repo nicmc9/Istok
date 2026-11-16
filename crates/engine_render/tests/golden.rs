@@ -145,6 +145,150 @@ fn assert_batched(model: &str) {
     );
 }
 
+/// Две лисы: compute и вершинный шейдер дают одну картинку, оба пути склеивают вызов.
+#[test]
+fn fox_compute_matches_vertex_skinning() {
+    let _reset = ResetSkinCompute;
+    let Some((on, on_shot)) = render_fox(true) else {
+        return;
+    };
+    let Some((off, off_shot)) = render_fox(false) else {
+        return;
+    };
+    assert!(
+        on.draw_calls < on.drawn,
+        "compute: вызовов {} при {} примитивах",
+        on.draw_calls,
+        on.drawn
+    );
+    assert!(
+        off.draw_calls < off.drawn,
+        "вершинный: вызовов {} при {} примитивах",
+        off.draw_calls,
+        off.drawn
+    );
+    assert_eq!(
+        off.skin_compute, 0,
+        "render.skin_compute false всё ещё считает на compute"
+    );
+    if on.gpu_tier == engine_render::GpuTier::Compute {
+        assert!(
+            on.skin_compute >= 2,
+            "две лисы должны попасть в бюджет compute, сейчас {}",
+            on.skin_compute
+        );
+    }
+    let share = difference_share(&on_shot, &off_shot);
+    if share > 0.005 {
+        let dir = env!("CARGO_TARGET_TMPDIR");
+        let _ = engine_render::save_png(&on_shot, &format!("{dir}/fox-compute.png"));
+        let _ = engine_render::save_png(&off_shot, &format!("{dir}/fox-vertex.png"));
+        panic!(
+            "лиса: compute и вершинный шейдер отличаются на {:.2}% пикселей. Кадры: {dir}/fox-*.png",
+            share * 100.0
+        );
+    }
+}
+
+struct ResetSkinCompute;
+
+impl Drop for ResetSkinCompute {
+    fn drop(&mut self) {
+        engine_render::RENDER_SKIN_COMPUTE.set(true);
+    }
+}
+
+fn difference_share(left: &engine_render::Screenshot, right: &engine_render::Screenshot) -> f64 {
+    assert_eq!(
+        (left.width, left.height),
+        (right.width, right.height),
+        "размер кадра"
+    );
+    let different = left
+        .data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(right.data.as_chunks::<4>().0)
+        .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 8))
+        .count();
+    let total = (left.width * left.height) as usize;
+    #[allow(clippy::cast_precision_loss)]
+    {
+        different as f64 / total as f64
+    }
+}
+
+fn render_fox(compute: bool) -> Option<(engine_render::RenderStats, engine_render::Screenshot)> {
+    let mut app = App::new();
+    {
+        let mut cvars = app.world_mut().resource_mut::<CVars>();
+        let flag = if compute { "true" } else { "false" };
+        for (name, value) in [
+            ("render.headless", "true"),
+            ("render.headless_width", &WIDTH.to_string()),
+            ("render.headless_height", &HEIGHT.to_string()),
+            ("assets.root", "../../assets"),
+            ("assets.strict", "true"),
+            ("render.skin_compute", flag),
+        ] {
+            cvars.set(name, value, CVarSource::LaunchArguments).unwrap();
+        }
+    }
+    app.add_plugin(engine_net::NetPlugin)
+        .add_plugin(AssetPlugin)
+        .add_plugin(ScenePlugin)
+        .add_plugin(RenderPlugin)
+        .insert_resource(ClearColor(Color::rgb(0.1, 0.1, 0.12)));
+    app.update();
+
+    let handle = app
+        .world()
+        .resource::<AssetServer>()
+        .load::<Gltf>("models/khronos/Fox/Fox.glb");
+    let world = app.world_mut();
+    world.spawn((
+        SceneRoot(handle.clone()),
+        Transform::from_xyz(-40.0, 0.0, 0.0),
+    ));
+    world.spawn((SceneRoot(handle), Transform::from_xyz(40.0, 0.0, 0.0)));
+    world.spawn((
+        Camera::default(),
+        Transform::from_xyz(0.0, 60.0, 220.0).looking_at(Vec3::new(0.0, 40.0, 0.0), Vec3::Y),
+    ));
+    world.spawn((
+        DirectionalLight::default(),
+        Transform::from_xyz(2.0, 4.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+
+    for _ in 0..2000 {
+        app.update();
+        let stats = *app.world().resource::<engine_render::RenderStats>();
+        if stats.drawn >= 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    if app
+        .world()
+        .resource::<engine_render::RenderStats>()
+        .frames_rendered
+        == 0
+    {
+        eprintln!("Пропуск: нет GPU (кадр не нарисован)");
+        return None;
+    }
+    let stats = *app.world().resource::<engine_render::RenderStats>();
+    let receiver = request_screenshot(app.world_mut());
+    for _ in 0..100 {
+        app.update();
+        if let Some(result) = receiver.try_get() {
+            return Some((stats, result.expect("скриншот")));
+        }
+    }
+    panic!("скриншот не получен");
+}
+
 fn render_copies(model: &str) -> Option<engine_render::RenderStats> {
     let mut app = App::new();
     {

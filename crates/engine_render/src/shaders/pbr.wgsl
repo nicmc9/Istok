@@ -26,6 +26,7 @@ fn vs_main(in: VertexInput, inst: InstanceInput) -> VertexOutput {
 
 // Скиннинг: вершина — взвешенная сумма положений по четырём костям.
 // Матрицы костей уже мировые, у экземпляра матрица модели единичная.
+#ifndef PRESKINNED
 @vertex
 fn vs_skinned(
     in: VertexInput,
@@ -44,6 +45,32 @@ fn vs_skinned(
     out.uv = in.uv;
     return out;
 }
+#endif
+
+// Вершина уже посчитана compute. y смещения — индекс её позиции в буфере.
+// UV берём из меша: в буфер результата они не пишутся.
+#ifdef PRESKINNED
+struct UvInput {
+    @location(2) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_preskinned(
+    uv_in: UvInput,
+    inst: InstanceInput,
+    @builtin(vertex_index) vertex_index: u32,
+    @location(13) joint_offset: vec4<u32>,
+) -> VertexOutput {
+    let posed = skinned_vertices[joint_offset.y + vertex_index];
+    let world = instance_model(inst) * vec4<f32>(posed.position.xyz, 1.0);
+    var out: VertexOutput;
+    out.clip_position = frame.view_proj * world;
+    out.world_position = world.xyz;
+    out.world_normal = (instance_normal(inst) * vec4<f32>(posed.normal.xyz, 0.0)).xyz;
+    out.uv = uv_in.uv;
+    return out;
+}
+#endif
 
 const PI: f32 = 3.14159265;
 

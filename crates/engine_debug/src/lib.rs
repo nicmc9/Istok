@@ -78,8 +78,16 @@ fn measure_rates(time: Res<Time>, render: Res<RenderStats>, mut rates: ResMut<Fr
     }
 }
 
-fn primitive_line(drawn: u64, draw_calls: u64, culled: u64) -> String {
-    format!("{drawn} нарисовано, {draw_calls} вызовов, {culled} отсечено")
+fn primitive_line(render: &RenderStats) -> String {
+    let line = format!(
+        "{} нарисовано, {} вызовов, {} отсечено",
+        render.drawn, render.draw_calls, render.culled
+    );
+    if render.skin_compute > 0 {
+        format!("{line}, compute {}", render.skin_compute)
+    } else {
+        line
+    }
 }
 
 fn stats_window(
@@ -115,10 +123,7 @@ fn stats_window(
                         ms(render.frame_cpu_time)
                     ),
                 );
-                row(
-                    "Примитивы",
-                    primitive_line(render.drawn, render.draw_calls, render.culled),
-                );
+                row("Примитивы", primitive_line(&render));
                 let gpu = |time: Option<engine_core::Duration>| {
                     time.map_or_else(|| "—".to_owned(), |t| format!("{:.2} мс", ms(t)))
                 };

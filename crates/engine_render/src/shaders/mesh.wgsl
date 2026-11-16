@@ -38,8 +38,16 @@ fn instance_normal(inst: InstanceInput) -> mat4x4<f32> {
     return mat4x4<f32>(inst.normal0, inst.normal1, inst.normal2, inst.normal3);
 }
 
-// Матрицы костей. С storage все скелеты кадра лежат подряд, экземпляр хранит начало своих.
-// Без storage привязан один скелет на вызов (смещение uniform), индексы костей локальные.
+// Группа 2. PRESKINNED — уже посчитанные вершины (compute). Иначе кости:
+// с storage все скелеты кадра лежат подряд, экземпляр хранит начало своих;
+// без storage привязан один скелет на вызов (смещение uniform).
+#ifdef PRESKINNED
+struct SkinnedVertex {
+    position: vec4<f32>,
+    normal: vec4<f32>,
+};
+@group(2) @binding(0) var<storage, read> skinned_vertices: array<SkinnedVertex>;
+#else
 #ifdef JOINT_STORAGE
 @group(2) @binding(0) var<storage, read> joint_matrices: array<mat4x4<f32>>;
 #else
@@ -47,6 +55,7 @@ struct Joints {
     matrices: array<mat4x4<f32>, 256>,
 };
 @group(2) @binding(0) var<uniform> joints: Joints;
+#endif
 #endif
 
 struct VertexInput {
@@ -56,6 +65,7 @@ struct VertexInput {
 };
 
 // Матрица скиннинга: взвешенная сумма матриц четырёх костей.
+#ifndef PRESKINNED
 fn skin_matrix(offset: u32, joint_indices: vec4<u32>, joint_weights: vec4<f32>) -> mat4x4<f32> {
 #ifdef JOINT_STORAGE
     let base = offset;
@@ -76,3 +86,4 @@ fn joint_at(index: u32) -> mat4x4<f32> {
     return joints.matrices[index];
 #endif
 }
+#endif

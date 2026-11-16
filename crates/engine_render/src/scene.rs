@@ -67,7 +67,8 @@ struct MaterialUniform {
 }
 
 /// Один экземпляр меша. Раскладка совпадает с атрибутами шейдера:
-/// модель (0), нормали (64), начало костей (128, `x` — индекс матрицы).
+/// модель (0), нормали (64), кости (128): `x` — индекс матрицы, `y` — начало
+/// уже посчитанных вершин, если этот экземпляр прошёл через compute.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct InstanceData {
@@ -165,6 +166,7 @@ struct GpuPrimitive {
     skin: Option<wgpu::Buffer>,
     indices: wgpu::Buffer,
     index_count: u32,
+    vertex_count: u32,
     bounds: Aabb,
 }
 
@@ -219,6 +221,8 @@ struct DrawEntry {
     distance: f32,
     /// Начало матриц костей: индекс в storage или номер слота uniform.
     joint_slot: Option<u32>,
+    /// Начало вершин в буфере compute. `None` — скиннинг в вершинном шейдере.
+    skin_base: Option<u32>,
     model: Mat4,
     bounds: Aabb,
     /// Прошёл отсечение по фрустуму камеры.
@@ -241,6 +245,19 @@ struct DrawBatch {
     entry: u32,
     first: u32,
     count: u32,
+    /// Вершины уже посчитаны compute, вершинный шейдер их только читает.
+    preskinned: bool,
+}
+
+/// Один вызов, у которого поза уже лежит в storage.
+struct Preskin<'a, 'b> {
+    entry: &'a DrawEntry,
+    primitive: &'a GpuPrimitive,
+    material: &'a wgpu::BindGroup,
+    instances: &'b wgpu::Buffer,
+    first: u32,
+    count: u32,
+    shadow: bool,
 }
 
 /// Индексы четырёх костей и их веса — 24 байта на вершину.
@@ -259,6 +276,8 @@ pub(crate) struct DrawStats {
     pub missing: u32,
     /// Вызовы `draw` прохода сцены. Тени сюда не входят.
     pub draw_calls: u32,
+    /// Скелетных примитивов, посчитанных compute. Остальные — вершинный шейдер.
+    pub skin_compute: u32,
 }
 
 pub(crate) struct SceneRenderer {
@@ -306,6 +325,41 @@ pub(crate) struct SceneRenderer {
     hdr: bool,
     line_buffer: Option<(wgpu::Buffer, u64)>,
     line_count: u32,
+    skin: SkinState,
+}
+
+/// Compute-скиннинг кадра: пайплайны чтения и группы, которые в него попали.
+struct SkinState {
+    gpu: Option<crate::skin::SkinGpu>,
+    preskin: HashMap<(bool, bool), wgpu::RenderPipeline>,
+    jobs: Vec<PendingSkin>,
+    instances: Vec<crate::skin::SkinInstance>,
+    /// Куда в `instance_data` попал каждый объект кадра (сцена и все слои теней).
+    entry_slots: Vec<Vec<u32>>,
+}
+
+struct SkinGroup {
+    mesh: AssetId<Mesh>,
+    primitive: u32,
+    vertex_count: u32,
+    entries: Vec<usize>,
+}
+
+impl SkinGroup {
+    fn bytes(&self) -> u64 {
+        u64::from(self.vertex_count)
+            .saturating_mul(u64::try_from(self.entries.len()).unwrap_or(u64::MAX))
+            .saturating_mul(crate::skin::OUTPUT_STRIDE)
+    }
+}
+
+/// Один примитив, который целиком считается на compute.
+struct PendingSkin {
+    mesh: AssetId<Mesh>,
+    primitive: u32,
+    vertex_count: u32,
+    instance_base: u32,
+    instance_count: u32,
 }
 
 /// Всё для прохода теней: карта, матрицы каскадов (по смещению в буфере), пайплайны.
@@ -321,6 +375,8 @@ struct ShadowResources {
     view_stride: u64,
     /// Ключ: (скелетный, альфа-маска).
     pipelines: HashMap<(bool, bool), wgpu::RenderPipeline>,
+    /// Уже посчитанные compute вершины. Ключ — альфа-маска.
+    preskin: HashMap<bool, wgpu::RenderPipeline>,
 }
 
 /// Куда рисовать кадр.
@@ -384,6 +440,7 @@ impl SceneRenderer {
         color_format: wgpu::TextureFormat,
         hdr: bool,
         joint_storage: bool,
+        compute: bool,
         sources: &HashMap<String, String>,
     ) -> Self {
         let _zone = tracing::trace_span!("scene_renderer_new").entered();
@@ -433,18 +490,18 @@ impl SceneRenderer {
         });
         let [white_srgb, white_linear, flat_normal] = fallback_textures(device, queue);
 
-        let layouts = [
-            &frame_layout,
-            &material_layout,
-            &joints_layout,
-            &shadows.view_layout,
-        ];
-        // Встроенные шейдеры обязаны собираться — иначе это ошибка в самом движке
-        let (pipelines, line_pipeline, shadow_pipelines) =
-            build_pipelines(device, layouts, color_format, hdr, joint_storage, sources)
-                .unwrap_or_else(|error| panic!("шейдеры движка не собрались: {error}"));
-        let mut shadows = shadows;
-        shadows.pipelines = shadow_pipelines;
+        let (pipelines, line_pipeline, shadows, skin) = assemble_pipelines(
+            device,
+            sources,
+            ShaderSetup {
+                color_format,
+                hdr,
+                joint_storage,
+                compute,
+            },
+            shadows,
+            [&frame_layout, &material_layout, &joints_layout],
+        );
         let default_material = GpuMaterial::new(device, MaterialData::from(&Material::default()));
         Self {
             frame_layout,
@@ -484,6 +541,7 @@ impl SceneRenderer {
             hdr,
             line_buffer: None,
             line_count: 0,
+            skin,
         }
     }
 
@@ -493,28 +551,44 @@ impl SceneRenderer {
         device: &wgpu::Device,
         sources: &HashMap<String, String>,
     ) -> Result<(), String> {
-        let layouts = [
-            &self.frame_layout,
-            &self.material_layout,
-            &self.joints_layout,
-            &self.shadows.view_layout,
-        ];
-        let (pipelines, line_pipeline, shadow_pipelines) = build_pipelines(
+        let read = self.skin.gpu.as_ref().map(|gpu| gpu.read_layout().clone());
+        let skin_pipeline = self
+            .skin
+            .gpu
+            .as_ref()
+            .map(|gpu| gpu.recompile(device, sources))
+            .transpose()?;
+        let built = build_pipelines(
             device,
-            layouts,
+            [
+                &self.frame_layout,
+                &self.material_layout,
+                &self.joints_layout,
+                &self.shadows.view_layout,
+            ],
             self.color_format,
             self.hdr,
             self.joints.storage(),
+            read.as_ref(),
             sources,
         )?;
-        self.pipelines = pipelines;
-        self.line_pipeline = line_pipeline;
-        self.shadows.pipelines = shadow_pipelines;
+        self.pipelines = built.pbr;
+        self.line_pipeline = built.lines;
+        self.shadows.pipelines = built.shadows;
+        self.shadows.preskin = built.shadow_preskin;
+        self.skin.preskin = built.preskin;
+        if let Some(pipeline) = skin_pipeline
+            && let Some(gpu) = self.skin.gpu.as_mut()
+        {
+            gpu.install(pipeline);
+        }
         Ok(())
     }
 
     pub fn upload_mesh(&mut self, device: &wgpu::Device, id: AssetId<Mesh>, mesh: &Mesh) {
         let _zone = tracing::trace_span!("upload_mesh").entered();
+        // Compute читает позу привязки как storage, вершинный шейдер — как вершины.
+        let compute_skin = self.skin.gpu.is_some();
         let primitives = mesh
             .primitives
             .iter()
@@ -526,40 +600,45 @@ impl SceneRenderer {
                         uv: p.uvs.get(i).copied().unwrap_or_default(),
                     })
                     .collect();
+                let skinned = !p.joints.is_empty() && p.joints.len() == p.positions.len();
+                let vertex_usage = if compute_skin && skinned {
+                    wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE
+                } else {
+                    wgpu::BufferUsages::VERTEX
+                };
                 GpuPrimitive {
                     vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("vertices"),
                         contents: bytemuck::cast_slice(&vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
+                        usage: vertex_usage,
                     }),
                     indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("indices"),
                         contents: bytemuck::cast_slice(&p.indices),
                         usage: wgpu::BufferUsages::INDEX,
                     }),
-                    skin: (!p.joints.is_empty() && p.joints.len() == p.positions.len()).then(
-                        || {
-                            let skin: Vec<SkinVertex> = p
-                                .joints
-                                .iter()
-                                .zip(
-                                    p.weights
-                                        .iter()
-                                        .chain(std::iter::repeat(&[1.0, 0.0, 0.0, 0.0])),
-                                )
-                                .map(|(joints, weights)| SkinVertex {
-                                    joints: *joints,
-                                    weights: *weights,
-                                })
-                                .collect();
-                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                label: Some("skin"),
-                                contents: bytemuck::cast_slice(&skin),
-                                usage: wgpu::BufferUsages::VERTEX,
+                    skin: skinned.then(|| {
+                        let skin: Vec<SkinVertex> = p
+                            .joints
+                            .iter()
+                            .zip(
+                                p.weights
+                                    .iter()
+                                    .chain(std::iter::repeat(&[1.0, 0.0, 0.0, 0.0])),
+                            )
+                            .map(|(joints, weights)| SkinVertex {
+                                joints: *joints,
+                                weights: *weights,
                             })
-                        },
-                    ),
+                            .collect();
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("skin"),
+                            contents: bytemuck::cast_slice(&skin),
+                            usage: vertex_usage,
+                        })
+                    }),
                     index_count: u32::try_from(p.indices.len()).unwrap_or(u32::MAX),
+                    vertex_count: u32::try_from(p.positions.len()).unwrap_or(0),
                     bounds: p.bounds,
                 }
             })
@@ -640,6 +719,7 @@ impl SceneRenderer {
         self.prepare_shadows(device, queue, snapshot, &camera, &view_proj);
         self.cull_and_collect(snapshot, alpha, &view_proj, camera_position, &mut stats);
         self.build_batches(snapshot);
+        stats.skin_compute = self.assign_skin_compute(snapshot);
         self.upload_instances(device, queue);
         let joint_count = if self.joints.storage() {
             u64::try_from(self.joint_data.len() / usize::try_from(MATRIX_SIZE).unwrap_or(64))
@@ -651,6 +731,7 @@ impl SceneRenderer {
         if !self.joint_data.is_empty() {
             queue.write_buffer(&self.joint_buffer, 0, &self.joint_data);
         }
+        self.upload_skin(device, queue);
         let frame = self.frame_uniform(snapshot, &view_proj, &camera);
         queue.write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&frame));
         self.prepare_materials(device, snapshot);
@@ -858,6 +939,7 @@ impl SceneRenderer {
                 masked,
                 distance,
                 joint_slot,
+                skin_base: None,
                 model,
                 bounds: world_bounds,
                 in_view,
@@ -921,6 +1003,7 @@ impl SceneRenderer {
         });
 
         self.instance_data.clear();
+        self.reset_entry_slots();
         let mut camera = self.push_batches(&opaque, snapshot);
         camera.append(&mut self.push_batches(&transparent, snapshot));
         self.camera_batches = camera;
@@ -982,19 +1065,164 @@ impl SceneRenderer {
                 let entry = u32::try_from(indices[range.start]).unwrap_or(0);
                 let count = u32::try_from(range.len()).unwrap_or(0);
                 for &index in &indices[range] {
-                    let item = &self.entries[index];
-                    self.instance_data.push(InstanceData::from_model(
-                        item.model,
-                        item.joint_slot.unwrap_or(0),
-                    ));
+                    let model = self.entries[index].model;
+                    let joint = self.entries[index].joint_slot.unwrap_or(0);
+                    let slot = u32::try_from(self.instance_data.len()).unwrap_or(u32::MAX);
+                    self.skin.entry_slots[index].push(slot);
+                    self.instance_data
+                        .push(InstanceData::from_model(model, joint));
                 }
                 DrawBatch {
                     entry,
                     first,
                     count,
+                    preskinned: false,
                 }
             })
             .collect()
+    }
+
+    fn reset_entry_slots(&mut self) {
+        self.skin.entry_slots.truncate(self.entries.len());
+        self.skin.entry_slots.resize(self.entries.len(), Vec::new());
+        for slots in &mut self.skin.entry_slots {
+            slots.clear();
+        }
+    }
+
+    /// Маленькие группы скелетов забирают бюджет первыми. Не влезшие остаются на вершинном шейдере.
+    fn assign_skin_compute(&mut self, snapshot: &FrameSnapshot) -> u32 {
+        self.skin.jobs.clear();
+        self.skin.instances.clear();
+        if self.skin.gpu.is_none() || !crate::skin::RENDER_SKIN_COMPUTE.get() {
+            return 0;
+        }
+        let mut groups: Vec<SkinGroup> = Vec::new();
+        let mut index_of: HashMap<(AssetId<Mesh>, u32), usize> = HashMap::new();
+        for (index, entry) in self.entries.iter().enumerate() {
+            if !entry.kind.skinned || self.skin.entry_slots[index].is_empty() {
+                continue;
+            }
+            let draw = &snapshot.draws[entry.index];
+            let vertex_count = self.meshes[&draw.mesh][draw.primitive as usize].vertex_count;
+            let key = (draw.mesh, draw.primitive);
+            if let Some(&slot) = index_of.get(&key) {
+                groups[slot].entries.push(index);
+            } else {
+                index_of.insert(key, groups.len());
+                groups.push(SkinGroup {
+                    mesh: draw.mesh,
+                    primitive: draw.primitive,
+                    vertex_count,
+                    entries: vec![index],
+                });
+            }
+        }
+        let sizes: Vec<u64> = groups.iter().map(SkinGroup::bytes).collect();
+        let chosen = crate::skin::select_skin_groups(&sizes, crate::skin::skin_budget_bytes());
+        let mut cursor = 0u32;
+        let mut count = 0u32;
+        for (group, on) in groups.iter().zip(chosen) {
+            if !on {
+                continue;
+            }
+            let instance_base = u32::try_from(self.skin.instances.len()).unwrap_or(0);
+            for &index in &group.entries {
+                let joint = self.entries[index].joint_slot.unwrap_or(0);
+                self.entries[index].skin_base = Some(cursor);
+                for &slot in &self.skin.entry_slots[index] {
+                    self.instance_data[slot as usize].joint_offset[1] = cursor;
+                }
+                self.skin.instances.push(crate::skin::SkinInstance {
+                    joint_offset: joint,
+                    output_base: cursor,
+                });
+                cursor = cursor.saturating_add(group.vertex_count);
+                count += 1;
+            }
+            self.skin.jobs.push(PendingSkin {
+                mesh: group.mesh,
+                primitive: group.primitive,
+                vertex_count: group.vertex_count,
+                instance_base,
+                instance_count: u32::try_from(group.entries.len()).unwrap_or(0),
+            });
+        }
+        let preskinned: Vec<bool> = self
+            .entries
+            .iter()
+            .map(|entry| entry.skin_base.is_some())
+            .collect();
+        for batch in &mut self.camera_batches {
+            batch.preskinned = preskinned[batch.entry as usize];
+        }
+        for layer in &mut self.shadow_batches {
+            for batch in layer {
+                batch.preskinned = preskinned[batch.entry as usize];
+            }
+        }
+        count
+    }
+
+    /// Буферы compute ссылаются на кости, поэтому зовётся после их заливки.
+    fn upload_skin(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.skin.gpu.is_none() {
+            return;
+        }
+        if self.skin.jobs.is_empty() {
+            if let Some(gpu) = self.skin.gpu.as_mut() {
+                gpu.reset();
+            }
+            return;
+        }
+        // [Rust] `Buffer` — хэндл. Копия нужна, чтобы отдать буферы меша в `skin`,
+        // не держа ссылку на `self.meshes` одновременно с `&mut self.skin`.
+        let owned: Vec<_> = self
+            .skin
+            .jobs
+            .iter()
+            .filter_map(|job| {
+                let primitive = &self.meshes[&job.mesh][job.primitive as usize];
+                primitive.skin.as_ref().map(|weights| {
+                    (
+                        primitive.vertices.clone(),
+                        weights.clone(),
+                        job.vertex_count,
+                        job.instance_base,
+                        job.instance_count,
+                    )
+                })
+            })
+            .collect();
+        let joints = self.joint_buffer.clone();
+        let instances = self.skin.instances.clone();
+        let passes: Vec<_> = owned
+            .iter()
+            .map(
+                |(vertices, weights, vertex_count, instance_base, instance_count)| {
+                    crate::skin::SkinPass {
+                        vertices,
+                        weights,
+                        vertex_count: *vertex_count,
+                        instance_base: *instance_base,
+                        instance_count: *instance_count,
+                    }
+                },
+            )
+            .collect();
+        let gpu = self
+            .skin
+            .gpu
+            .as_mut()
+            .unwrap_or_else(|| panic!("compute-скиннинг не создан"));
+        gpu.upload(device, queue, &joints, &instances, &passes);
+    }
+
+    /// До теней и сцены: поза пишется один раз и дальше только читается.
+    pub fn dispatch_skin(&self, encoder: &mut wgpu::CommandEncoder) {
+        if let Some(gpu) = &self.skin.gpu {
+            gpu.dispatch(encoder);
+        }
     }
 
     fn upload_instances(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
@@ -1279,42 +1507,88 @@ impl SceneRenderer {
             let Some((bind_group, _)) = material.bind_group.as_ref() else {
                 continue;
             };
-            if shadow {
-                let key = (entry.kind.skinned, entry.masked);
-                if shadow_pipeline != Some(key) {
-                    pass.set_pipeline(&self.shadows.pipelines[&key]);
-                    shadow_pipeline = Some(key);
-                }
-            } else if scene_pipeline != Some(entry.kind) {
-                pass.set_pipeline(&self.pipelines[&entry.kind]);
-                scene_pipeline = Some(entry.kind);
-            }
-            pass.set_bind_group(1, bind_group, &[]);
-            pass.set_vertex_buffer(0, primitive.vertices.slice(..));
-            let instance_slot = if let (Some(joint_slot), Some(skin)) =
-                (entry.joint_slot, primitive.skin.as_ref())
-            {
-                if self.joints.storage() {
-                    pass.set_bind_group(2, &self.joint_bind_group, &[]);
-                } else {
-                    let offset =
-                        u32::try_from(u64::from(joint_slot) * self.joint_stride).unwrap_or(0);
-                    pass.set_bind_group(2, &self.joint_bind_group, &[offset]);
-                }
-                pass.set_vertex_buffer(1, skin.slice(..));
-                2
+            if batch.preskinned {
+                scene_pipeline = None;
+                shadow_pipeline = None;
+                self.draw_preskinned(
+                    pass,
+                    &Preskin {
+                        entry,
+                        primitive,
+                        material: bind_group,
+                        instances: &instances,
+                        first: batch.first,
+                        count: batch.count,
+                        shadow,
+                    },
+                );
             } else {
-                1
-            };
-            pass.set_vertex_buffer(instance_slot, instances.slice(..));
-            pass.set_index_buffer(primitive.indices.slice(..), wgpu::IndexFormat::Uint32);
-            let end = batch.first.saturating_add(batch.count);
-            pass.draw_indexed(0..primitive.index_count, 0, batch.first..end);
+                if shadow {
+                    let key = (entry.kind.skinned, entry.masked);
+                    if shadow_pipeline != Some(key) {
+                        pass.set_pipeline(&self.shadows.pipelines[&key]);
+                        shadow_pipeline = Some(key);
+                    }
+                } else if scene_pipeline != Some(entry.kind) {
+                    pass.set_pipeline(&self.pipelines[&entry.kind]);
+                    scene_pipeline = Some(entry.kind);
+                }
+                pass.set_bind_group(1, bind_group, &[]);
+                pass.set_vertex_buffer(0, primitive.vertices.slice(..));
+                let instance_slot = if let (Some(joint_slot), Some(skin)) =
+                    (entry.joint_slot, primitive.skin.as_ref())
+                {
+                    if self.joints.storage() {
+                        pass.set_bind_group(2, &self.joint_bind_group, &[]);
+                    } else {
+                        let offset =
+                            u32::try_from(u64::from(joint_slot) * self.joint_stride).unwrap_or(0);
+                        pass.set_bind_group(2, &self.joint_bind_group, &[offset]);
+                    }
+                    pass.set_vertex_buffer(1, skin.slice(..));
+                    2
+                } else {
+                    1
+                };
+                pass.set_vertex_buffer(instance_slot, instances.slice(..));
+                pass.set_index_buffer(primitive.indices.slice(..), wgpu::IndexFormat::Uint32);
+                let end = batch.first.saturating_add(batch.count);
+                pass.draw_indexed(0..primitive.index_count, 0, batch.first..end);
+            }
             if let Some(stats) = stats.as_mut() {
                 stats.drawn += batch.count;
                 stats.draw_calls += 1;
             }
         }
+    }
+
+    /// Вершинный шейдер не считает кости: позиция и нормаль уже в storage.
+    fn draw_preskinned<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, draw: &Preskin<'a, '_>) {
+        let read = self
+            .skin
+            .gpu
+            .as_ref()
+            .and_then(crate::skin::SkinGpu::read_group)
+            .unwrap_or_else(|| panic!("нет буфера compute-скиннинга"));
+        if draw.shadow {
+            pass.set_pipeline(&self.shadows.preskin[&draw.entry.masked]);
+        } else {
+            let key = (draw.entry.kind.blend, draw.entry.kind.double_sided);
+            pass.set_pipeline(&self.skin.preskin[&key]);
+        }
+        pass.set_bind_group(1, draw.material, &[]);
+        pass.set_bind_group(2, read, &[]);
+        // Без UV (непрозрачная тень) буфер вершин не нужен: позиция берётся из storage.
+        let instance_slot = if draw.shadow && !draw.entry.masked {
+            0
+        } else {
+            pass.set_vertex_buffer(0, draw.primitive.vertices.slice(..));
+            1
+        };
+        pass.set_vertex_buffer(instance_slot, draw.instances.slice(..));
+        pass.set_index_buffer(draw.primitive.indices.slice(..), wgpu::IndexFormat::Uint32);
+        let end = draw.first.saturating_add(draw.count);
+        pass.draw_indexed(0..draw.primitive.index_count, 0, draw.first..end);
     }
 
     fn prepare_material(&mut self, device: &wgpu::Device, id: AssetId<Material>) {
@@ -1568,6 +1842,7 @@ impl ShadowResources {
             view_bind_group,
             view_stride,
             pipelines: HashMap::new(),
+            preskin: HashMap::new(),
         }
     }
 }
@@ -1729,21 +2004,25 @@ pub(crate) fn upload_rgba(device: &wgpu::Device, queue: &wgpu::Queue, image: &Im
     }
 }
 
-type Pipelines = (
-    HashMap<PipelineKind, wgpu::RenderPipeline>,
-    wgpu::RenderPipeline,
-    HashMap<(bool, bool), wgpu::RenderPipeline>,
-);
+struct BuiltPipelines {
+    pbr: HashMap<PipelineKind, wgpu::RenderPipeline>,
+    lines: wgpu::RenderPipeline,
+    shadows: HashMap<(bool, bool), wgpu::RenderPipeline>,
+    preskin: HashMap<(bool, bool), wgpu::RenderPipeline>,
+    shadow_preskin: HashMap<bool, wgpu::RenderPipeline>,
+}
 
 /// Все пайплайны сцены из исходников шейдеров. Ошибка — текстом, без паники.
+/// `read` — раскладка уже посчитанных вершин. Без неё compute-пайплайны не собираются.
 fn build_pipelines(
     device: &wgpu::Device,
     layouts: [&wgpu::BindGroupLayout; 4],
     color_format: wgpu::TextureFormat,
     hdr: bool,
     joint_storage: bool,
+    read: Option<&wgpu::BindGroupLayout>,
     sources: &HashMap<String, String>,
-) -> Result<Pipelines, String> {
+) -> Result<BuiltPipelines, String> {
     let mut pbr_defines = Vec::new();
     if hdr {
         pbr_defines.push("HDR_OUTPUT");
@@ -1759,14 +2038,102 @@ fn build_pipelines(
     let pbr = crate::shaders::compile(device, sources, "shaders/pbr.wgsl", &pbr_defines)?;
     let debug = crate::shaders::compile(device, sources, "shaders/debug.wgsl", &pbr_defines)?;
     let shadow = crate::shaders::compile(device, sources, "shaders/shadow.wgsl", shadow_defines)?;
+    let (preskin_module, shadow_preskin_module) = if read.is_some() {
+        let mut defines = vec!["PRESKINNED"];
+        if hdr {
+            defines.push("HDR_OUTPUT");
+        }
+        let module = crate::shaders::compile(device, sources, "shaders/pbr.wgsl", &defines)?;
+        let shadow =
+            crate::shaders::compile(device, sources, "shaders/shadow.wgsl", &["PRESKINNED"])?;
+        (Some(module), Some(shadow))
+    } else {
+        (None, None)
+    };
     let [frame, material, joints, shadow_view] = layouts;
-    crate::shaders::checked(device, || {
-        (
-            create_pipelines(device, [frame, material, joints], color_format, &pbr),
-            create_line_pipeline(device, frame, color_format, &debug),
-            create_shadow_pipelines(device, [shadow_view, material, joints], &shadow),
-        )
+    crate::shaders::checked(device, || BuiltPipelines {
+        pbr: create_pipelines(device, [frame, material, joints], color_format, &pbr),
+        lines: create_line_pipeline(device, frame, color_format, &debug),
+        shadows: create_shadow_pipelines(device, [shadow_view, material, joints], &shadow),
+        preskin: match (preskin_module.as_ref(), read) {
+            (Some(module), Some(read)) => {
+                create_preskin_pipelines(device, [frame, material, read], color_format, module)
+            }
+            _ => HashMap::new(),
+        },
+        shadow_preskin: match (shadow_preskin_module.as_ref(), read) {
+            (Some(module), Some(read)) => {
+                create_shadow_preskin(device, [shadow_view, material, read], module)
+            }
+            _ => HashMap::new(),
+        },
     })
+}
+
+struct ShaderSetup {
+    color_format: wgpu::TextureFormat,
+    hdr: bool,
+    joint_storage: bool,
+    compute: bool,
+}
+
+/// Пайплайны и compute-скиннинг. Шейдеры движка обязаны собираться.
+fn assemble_pipelines(
+    device: &wgpu::Device,
+    sources: &HashMap<String, String>,
+    setup: ShaderSetup,
+    mut shadows: ShadowResources,
+    layouts: [&wgpu::BindGroupLayout; 3],
+) -> (
+    HashMap<PipelineKind, wgpu::RenderPipeline>,
+    wgpu::RenderPipeline,
+    ShadowResources,
+    SkinState,
+) {
+    let enabled = setup.joint_storage && setup.compute;
+    if !enabled {
+        tracing::info!("Скиннинг: compute недоступен, остаётся вершинный шейдер");
+    }
+    let gpu = enabled.then(|| {
+        crate::skin::SkinGpu::new(device, sources)
+            .unwrap_or_else(|error| panic!("compute-скиннинг не собрался: {error}"))
+    });
+    let read = gpu.as_ref().map(|gpu| gpu.read_layout().clone());
+    let built = build_pipelines(
+        device,
+        [layouts[0], layouts[1], layouts[2], &shadows.view_layout],
+        setup.color_format,
+        setup.hdr,
+        setup.joint_storage,
+        read.as_ref(),
+        sources,
+    )
+    .unwrap_or_else(|error| panic!("шейдеры движка не собрались: {error}"));
+    shadows.pipelines = built.shadows;
+    shadows.preskin = built.shadow_preskin;
+    let skin = SkinState {
+        gpu,
+        preskin: built.preskin,
+        jobs: Vec::new(),
+        instances: Vec::new(),
+        entry_slots: Vec::new(),
+    };
+    (built.pbr, built.lines, shadows, skin)
+}
+
+/// UV исходного меша. Смещение 24 — после позиции и нормали; макрос раскладки так не умеет.
+const PRESKIN_UV: &[wgpu::VertexAttribute] = &[wgpu::VertexAttribute {
+    format: wgpu::VertexFormat::Float32x2,
+    offset: 24,
+    shader_location: 2,
+}];
+
+fn uv_layout() -> wgpu::VertexBufferLayout<'static> {
+    wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<Vertex>() as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: PRESKIN_UV,
+    }
 }
 
 fn instance_layout(
@@ -1857,6 +2224,130 @@ fn create_shadow_pipelines(
             });
             pipelines.insert((skinned, masked), pipeline);
         }
+    }
+    pipelines
+}
+
+/// Сцена читает уже посчитанные вершины. Ключ — (прозрачность, двусторонность).
+fn create_preskin_pipelines(
+    device: &wgpu::Device,
+    layouts: [&wgpu::BindGroupLayout; 3],
+    color_format: wgpu::TextureFormat,
+    shader: &wgpu::ShaderModule,
+) -> HashMap<(bool, bool), wgpu::RenderPipeline> {
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("pbr_preskin"),
+        bind_group_layouts: &layouts.map(Some),
+        ..Default::default()
+    });
+    let uv = Some(uv_layout());
+    let instance = Some(instance_layout(PBR_SKINNED_ATTRS));
+    let buffers = [uv, instance];
+    let mut pipelines = HashMap::new();
+    for double_sided in [false, true] {
+        for blend in [false, true] {
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("pbr_preskin"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_preskinned"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &buffers,
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: if double_sided {
+                        None
+                    } else {
+                        Some(wgpu::Face::Back)
+                    },
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(!blend),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        blend: blend.then_some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            pipelines.insert((blend, double_sided), pipeline);
+        }
+    }
+    pipelines
+}
+
+/// Тени по уже посчитанным вершинам. Ключ — альфа-маска.
+fn create_shadow_preskin(
+    device: &wgpu::Device,
+    layouts: [&wgpu::BindGroupLayout; 3],
+    shader: &wgpu::ShaderModule,
+) -> HashMap<bool, wgpu::RenderPipeline> {
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("shadow_preskin"),
+        bind_group_layouts: &layouts.map(Some),
+        ..Default::default()
+    });
+    let masked_buffers = [
+        Some(uv_layout()),
+        Some(instance_layout(SHADOW_SKINNED_ATTRS)),
+    ];
+    let bare_buffers = [Some(instance_layout(SHADOW_SKINNED_ATTRS))];
+    let mut pipelines = HashMap::new();
+    for masked in [false, true] {
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("shadow_preskin"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some(if masked {
+                    "vs_preskinned_masked"
+                } else {
+                    "vs_preskinned"
+                }),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: if masked {
+                    &masked_buffers
+                } else {
+                    &bare_buffers
+                },
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 2.0,
+                    clamp: 0.0,
+                },
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: masked.then_some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_masked"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        pipelines.insert(masked, pipeline);
     }
     pipelines
 }

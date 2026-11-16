@@ -31,6 +31,8 @@ pub(crate) struct SharedStats {
     pub gpu_post_us: AtomicU64,
     pub gpu_ui_us: AtomicU64,
     pub culled: AtomicU64,
+    /// Скелетных примитивов на compute-скиннинге.
+    pub skin_compute: AtomicU64,
     pub gpu_meshes: AtomicU64,
     pub gpu_textures: AtomicU64,
     pub gpu_bytes: AtomicU64,
@@ -437,6 +439,7 @@ impl Renderer {
             if hdr { HDR_FORMAT } else { view_format },
             hdr,
             self.caps.vertex_storage(),
+            self.caps.compute(),
             &self.shader_sources,
         ));
         self.text = TextRenderer::new(
@@ -501,6 +504,9 @@ impl Renderer {
         self.stats
             .culled
             .store(u64::from(draw.culled), Ordering::Relaxed);
+        self.stats
+            .skin_compute
+            .store(u64::from(draw.skin_compute), Ordering::Relaxed);
         self.stats.frames_rendered.fetch_add(1, Ordering::Relaxed);
         if let Some(timer) = &self.timer {
             let [shadow, scene, post, ui] = timer.results;
@@ -902,6 +908,7 @@ fn execute_graph(
     };
 
     let mut draw = scene.prepare(&gpu.device, &gpu.queue, size, frame.snapshot, frame.alpha);
+    scene.dispatch_skin(encoder);
     let mut ui_commands = Vec::new();
     for pass in order {
         let _zone = tracing::trace_span!("pass", ?pass).entered();

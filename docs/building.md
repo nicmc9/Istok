@@ -37,7 +37,9 @@ cargo run -p sandbox -- --cvar sim.hz=30 --cvar render.mode=inline --cvar log.fi
 GL-контекст — GLES 3.2, compute-шейдеры включены. Отдельного пути без compute нет.
 
 Сцена: `--cvar sandbox.scene=sponza` (`showcase`, `orcs`, `sponza`, `helmet`, `sprites`, `fx`).
-`orcs` — тысяча орков, пол и одно солнце с тенями.
+`orcs` — тысяча орков, пол и одно солнце с тенями. Скиннинг этой толпы — в вершинном шейдере:
+готовая поза тысячи копий не входит в `render.skin_budget_mb` (16). Один персонаж считается
+на compute, если GPU умеет. Выключить: `render.skin_compute false`.
 `sprites` — плоская сцена: ортографическая камера, атлас 2×2 и один спрайт, который перебирает кадры.
 `fx` — пол, фонтан частиц и одна декаль.
 Управление камерой:
