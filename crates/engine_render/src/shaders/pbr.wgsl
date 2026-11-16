@@ -1,6 +1,6 @@
 // PBR (metallic-roughness, как в glTF): BRDF Кука–Торранса с GGX.
-// Группы привязок: 0 — кадр (камера, свет, карта теней), 1 — материал, 2 — объект
-// (смещение в буфере), 3 — кости.
+// Группы привязок: 0 — кадр (камера, свет, карта теней), 1 — материал, 2 — кости
+// скелетного меша. Матрица модели — атрибут экземпляра.
 
 #include "common.wgsl"
 
@@ -14,31 +14,33 @@ struct VertexOutput {
 };
 
 @vertex
-fn vs_main(in: VertexInput) -> VertexOutput {
-    let world = object.model * vec4<f32>(in.position, 1.0);
+fn vs_main(in: VertexInput, inst: InstanceInput) -> VertexOutput {
+    let world = instance_model(inst) * vec4<f32>(in.position, 1.0);
     var out: VertexOutput;
     out.clip_position = frame.view_proj * world;
     out.world_position = world.xyz;
-    out.world_normal = (object.normal_matrix * vec4<f32>(in.normal, 0.0)).xyz;
+    out.world_normal = (instance_normal(inst) * vec4<f32>(in.normal, 0.0)).xyz;
     out.uv = in.uv;
     return out;
 }
 
 // Скиннинг: вершина — взвешенная сумма положений по четырём костям.
-// Матрицы костей уже мировые, матрица модели не нужна.
+// Матрицы костей уже мировые, у экземпляра матрица модели единичная.
 @vertex
 fn vs_skinned(
     in: VertexInput,
     @location(3) joint_indices: vec4<u32>,
     @location(4) joint_weights: vec4<f32>,
+    inst: InstanceInput,
+    @location(13) joint_offset: vec4<u32>,
 ) -> VertexOutput {
-    let skin = skin_matrix(joint_indices, joint_weights);
-    let world = skin * vec4<f32>(in.position, 1.0);
+    let posed = skin_matrix(joint_offset.x, joint_indices, joint_weights);
+    let world = instance_model(inst) * posed * vec4<f32>(in.position, 1.0);
     var out: VertexOutput;
     out.clip_position = frame.view_proj * world;
     out.world_position = world.xyz;
     // Нормаль — той же матрицей (верно при равномерном масштабе костей)
-    out.world_normal = (skin * vec4<f32>(in.normal, 0.0)).xyz;
+    out.world_normal = (instance_normal(inst) * posed * vec4<f32>(in.normal, 0.0)).xyz;
     out.uv = in.uv;
     return out;
 }

@@ -120,3 +120,84 @@ fn golden_box_textured() {
         compare("box_textured", &shot);
     }
 }
+
+/// Две копии одного glTF — один вызов на примитив, не по вызову на копию.
+#[test]
+fn duplicates_share_one_draw() {
+    assert_batched("models/khronos/BoxTextured/BoxTextured.glb");
+    assert_batched("models/khronos/Fox/Fox.glb");
+}
+
+fn assert_batched(model: &str) {
+    let Some(stats) = render_copies(model) else {
+        return;
+    };
+    assert!(
+        stats.drawn >= 2,
+        "{model}: обе копии должны быть нарисованы, нарисовано {}",
+        stats.drawn
+    );
+    assert!(
+        stats.draw_calls < stats.drawn,
+        "{model}: вызовов {} при {} примитивах — копии не склеились",
+        stats.draw_calls,
+        stats.drawn
+    );
+}
+
+fn render_copies(model: &str) -> Option<engine_render::RenderStats> {
+    let mut app = App::new();
+    {
+        let mut cvars = app.world_mut().resource_mut::<CVars>();
+        for (name, value) in [
+            ("render.headless", "true"),
+            ("render.headless_width", &WIDTH.to_string()),
+            ("render.headless_height", &HEIGHT.to_string()),
+            ("assets.root", "../../assets"),
+            ("assets.strict", "true"),
+        ] {
+            cvars.set(name, value, CVarSource::LaunchArguments).unwrap();
+        }
+    }
+    app.add_plugin(engine_net::NetPlugin)
+        .add_plugin(AssetPlugin)
+        .add_plugin(ScenePlugin)
+        .add_plugin(RenderPlugin)
+        .insert_resource(ClearColor(Color::rgb(0.1, 0.1, 0.12)));
+    app.update();
+
+    let handle = app.world().resource::<AssetServer>().load::<Gltf>(model);
+    let world = app.world_mut();
+    world.spawn((
+        SceneRoot(handle.clone()),
+        Transform::from_xyz(-1.5, 0.0, 0.0),
+    ));
+    world.spawn((SceneRoot(handle), Transform::from_xyz(1.5, 0.0, 0.0)));
+    world.spawn((
+        Camera::default(),
+        Transform::from_xyz(4.0, 2.5, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    world.spawn((
+        DirectionalLight::default(),
+        Transform::from_xyz(2.0, 4.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+
+    for _ in 0..2000 {
+        app.update();
+        let stats = *app.world().resource::<engine_render::RenderStats>();
+        if stats.drawn >= 2 {
+            return Some(stats);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    if app
+        .world()
+        .resource::<engine_render::RenderStats>()
+        .frames_rendered
+        == 0
+    {
+        eprintln!("Пропуск: нет GPU (кадр не нарисован)");
+        return None;
+    }
+    Some(*app.world().resource::<engine_render::RenderStats>())
+}

@@ -15,9 +15,9 @@ use crate::shadows::{CASCADES, CameraView, Cascades, ShadowMap, ShadowSettings};
 use crate::snapshot::{FrameSnapshot, interpolate};
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-const OBJECT_SIZE: u64 = std::mem::size_of::<ObjectUniform>() as u64;
-/// 256 матриц 4×4 — массив `Joints` в шейдере.
+/// 256 матриц 4×4 — массив `Joints` в шейдере без storage.
 const JOINTS_SIZE: u64 = (crate::extract::MAX_JOINTS * 64) as u64;
+const MATRIX_SIZE: u64 = 64;
 
 // ---------- данные для шейдера ----------
 // [Rust] `#[repr(C)]` — раскладка полей как в C (без перестановок компилятором).
@@ -66,12 +66,87 @@ struct MaterialUniform {
     params: [f32; 4],
 }
 
+/// Один экземпляр меша. Раскладка совпадает с атрибутами шейдера:
+/// модель (0), нормали (64), начало костей (128, `x` — индекс матрицы).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct ObjectUniform {
+struct InstanceData {
     model: [[f32; 4]; 4],
     normal_matrix: [[f32; 4]; 4],
+    joint_offset: [u32; 4],
 }
+
+impl InstanceData {
+    fn from_model(model: Mat4, joint_offset: u32) -> Self {
+        Self {
+            model: model.to_cols_array_2d(),
+            normal_matrix: model.inverse().transpose().to_cols_array_2d(),
+            joint_offset: [joint_offset, 0, 0, 0],
+        }
+    }
+}
+
+/// Модель и нормали. Смещение костей не входит: обычный меш его не читает.
+const PBR_STATIC_ATTRS: &[wgpu::VertexAttribute] = &wgpu::vertex_attr_array![
+    5 => Float32x4,
+    6 => Float32x4,
+    7 => Float32x4,
+    8 => Float32x4,
+    9 => Float32x4,
+    10 => Float32x4,
+    11 => Float32x4,
+    12 => Float32x4
+];
+
+/// То же плюс `joint_offset` на байте 128.
+const PBR_SKINNED_ATTRS: &[wgpu::VertexAttribute] = &wgpu::vertex_attr_array![
+    5 => Float32x4,
+    6 => Float32x4,
+    7 => Float32x4,
+    8 => Float32x4,
+    9 => Float32x4,
+    10 => Float32x4,
+    11 => Float32x4,
+    12 => Float32x4,
+    13 => Uint32x4
+];
+
+/// Тени: только модель. Нормали в шейдере теней нет.
+const SHADOW_STATIC_ATTRS: &[wgpu::VertexAttribute] = &wgpu::vertex_attr_array![
+    5 => Float32x4,
+    6 => Float32x4,
+    7 => Float32x4,
+    8 => Float32x4
+];
+
+/// Тени скелета: модель и начало костей. Нормали между ними пропускаем — смещение вручную.
+const SHADOW_SKINNED_ATTRS: &[wgpu::VertexAttribute] = &[
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 0,
+        shader_location: 5,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 16,
+        shader_location: 6,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 32,
+        shader_location: 7,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 48,
+        shader_location: 8,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Uint32x4,
+        offset: 128,
+        shader_location: 13,
+    },
+];
 
 /// Вершина: позиция, нормаль, UV — 32 байта.
 #[repr(C)]
@@ -113,17 +188,28 @@ struct GpuMaterial {
     bind_group: Option<(wgpu::BindGroup, [bool; 5])>,
 }
 
+/// Как лежат кости: один storage на кадр или uniform на скелет.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JointMode {
+    Storage,
+    Uniform,
+}
+
+impl JointMode {
+    fn storage(self) -> bool {
+        matches!(self, Self::Storage)
+    }
+}
+
 /// Вариант PBR-пайплайна: 2 × 2 × 2 = 8 сочетаний.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct PipelineKind {
     blend: bool,
     double_sided: bool,
     skinned: bool,
 }
 
-/// Объект кадра с готовыми данными для GPU. Слот в буфере матриц = позиция в списке.
-/// В список попадают все объекты, а не только видимые камерой: тень может отбрасывать и то,
-/// что за кадром.
+/// Объект кадра. В список попадают и невидимые камере: тень может отбрасывать и то, что за кадром.
 #[derive(Clone, Copy)]
 struct DrawEntry {
     index: usize,
@@ -131,11 +217,30 @@ struct DrawEntry {
     /// Материал с альфа-маской — в тени нужны «дырки».
     masked: bool,
     distance: f32,
-    /// Слот матриц костей в буфере скелетов.
+    /// Начало матриц костей: индекс в storage или номер слота uniform.
     joint_slot: Option<u32>,
+    model: Mat4,
     bounds: Aabb,
     /// Прошёл отсечение по фрустуму камеры.
     in_view: bool,
+}
+
+/// Ключ склейки: один вызов на одинаковые меш, примитив, материал и пайплайн.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct BatchKey {
+    kind: PipelineKind,
+    masked: bool,
+    mesh: AssetId<Mesh>,
+    primitive: u32,
+    material: Option<AssetId<Material>>,
+}
+
+/// Кусок вершинного буфера экземпляров.
+struct DrawBatch {
+    /// Индекс в `entries` — по нему берутся меш и материал.
+    entry: u32,
+    first: u32,
+    count: u32,
 }
 
 /// Индексы четырёх костей и их веса — 24 байта на вершину.
@@ -152,28 +257,31 @@ pub(crate) struct DrawStats {
     pub drawn: u32,
     pub culled: u32,
     pub missing: u32,
+    /// Вызовы `draw` прохода сцены. Тени сюда не входят.
+    pub draw_calls: u32,
 }
 
 pub(crate) struct SceneRenderer {
     frame_layout: wgpu::BindGroupLayout,
     material_layout: wgpu::BindGroupLayout,
-    object_layout: wgpu::BindGroupLayout,
     joints_layout: wgpu::BindGroupLayout,
+    /// Кости всех скелетов — один storage-буфер, экземпляр хранит индекс первой матрицы.
+    /// Без vertex storage остаётся uniform на 256 костей и отдельный вызов на скелет.
+    joints: JointMode,
     joint_buffer: wgpu::Buffer,
     joint_bind_group: wgpu::BindGroup,
     joint_capacity: u64,
     joint_stride: u64,
     joint_data: Vec<u8>,
-    /// Начало скелета в снимке → слот в буфере (один скелет — несколько примитивов).
+    /// Начало скелета в снимке → индекс матрицы (storage) или номер слота (uniform).
     joint_slots: HashMap<u32, u32>,
     pipelines: HashMap<PipelineKind, wgpu::RenderPipeline>,
     frame_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
-    object_buffer: wgpu::Buffer,
-    object_bind_group: wgpu::BindGroup,
-    object_capacity: u64,
-    object_stride: u64,
-    object_data: Vec<u8>,
+    instance_data: Vec<InstanceData>,
+    instance_buffer: Option<(wgpu::Buffer, u64)>,
+    camera_batches: Vec<DrawBatch>,
+    shadow_batches: Vec<Vec<DrawBatch>>,
     sampler: wgpu::Sampler,
     /// Заглушки: белая (sRGB и линейная), «плоская» нормаль.
     white_srgb: wgpu::TextureView,
@@ -186,8 +294,6 @@ pub(crate) struct SceneRenderer {
     manual_srgb: bool,
     /// Объекты кадра (см. [`DrawEntry`]).
     entries: Vec<DrawEntry>,
-    /// Порядок отрисовки видимых камерой — индексы в `entries`.
-    order: Vec<usize>,
     shadows: ShadowResources,
     /// Каскады этого кадра; `None` — теней нет (выключены или нет солнца).
     cascades: Option<Cascades>,
@@ -277,16 +383,19 @@ impl SceneRenderer {
         queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
         hdr: bool,
+        joint_storage: bool,
         sources: &HashMap<String, String>,
     ) -> Self {
         let _zone = tracing::trace_span!("scene_renderer_new").entered();
-        let (frame_layout, material_layout, object_layout, joints_layout) = create_layouts(device);
+        let joints = if joint_storage {
+            JointMode::Storage
+        } else {
+            JointMode::Uniform
+        };
+        let (frame_layout, material_layout, joints_layout) = create_layouts(device, joint_storage);
 
-        // Объекты кладутся в один буфер, каждый по своему смещению (dynamic offset).
-        // Смещение обязано быть кратно min_uniform_buffer_offset_alignment (обычно 256).
+        // Смещение uniform обязано быть кратно min_uniform_buffer_offset_alignment (обычно 256).
         let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
-        let object_stride =
-            (std::mem::size_of::<ObjectUniform>() as u64).div_ceil(alignment) * alignment;
 
         let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame"),
@@ -298,24 +407,20 @@ impl SceneRenderer {
         let shadows = ShadowResources::new(device, alignment, defaults.size, defaults.local_size);
         let frame_bind_group =
             create_frame_bind_group(device, &frame_layout, &frame_buffer, &shadows);
-        let object_capacity = 256;
-        let (object_buffer, object_bind_group) = create_object_buffer(
-            device,
-            &object_layout,
-            object_stride,
-            object_capacity,
-            OBJECT_SIZE,
-        );
-        // Скелет — 256 матриц (16 КБ, минимально гарантированный размер uniform-привязки)
+        // Скелет без storage — 256 матриц (16 КБ). Со storage ёмкость — число матриц.
         let joint_stride = JOINTS_SIZE.div_ceil(alignment) * alignment;
-        let joint_capacity = 4;
-        let (joint_buffer, joint_bind_group) = create_object_buffer(
-            device,
-            &joints_layout,
-            joint_stride,
-            joint_capacity,
-            JOINTS_SIZE,
-        );
+        let joint_capacity = if joint_storage { 256 } else { 4 };
+        let (joint_buffer, joint_bind_group) = if joint_storage {
+            create_joint_storage(device, &joints_layout, joint_capacity * MATRIX_SIZE)
+        } else {
+            create_object_buffer(
+                device,
+                &joints_layout,
+                joint_stride,
+                joint_capacity,
+                JOINTS_SIZE,
+            )
+        };
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("material"),
@@ -331,13 +436,12 @@ impl SceneRenderer {
         let layouts = [
             &frame_layout,
             &material_layout,
-            &object_layout,
             &joints_layout,
             &shadows.view_layout,
         ];
         // Встроенные шейдеры обязаны собираться — иначе это ошибка в самом движке
         let (pipelines, line_pipeline, shadow_pipelines) =
-            build_pipelines(device, layouts, color_format, hdr, sources)
+            build_pipelines(device, layouts, color_format, hdr, joint_storage, sources)
                 .unwrap_or_else(|error| panic!("шейдеры движка не собрались: {error}"));
         let mut shadows = shadows;
         shadows.pipelines = shadow_pipelines;
@@ -345,8 +449,8 @@ impl SceneRenderer {
         Self {
             frame_layout,
             material_layout,
-            object_layout,
             joints_layout,
+            joints,
             joint_buffer,
             joint_bind_group,
             joint_capacity,
@@ -356,11 +460,10 @@ impl SceneRenderer {
             pipelines,
             frame_buffer,
             frame_bind_group,
-            object_buffer,
-            object_bind_group,
-            object_capacity,
-            object_stride,
-            object_data: Vec::new(),
+            instance_data: Vec::new(),
+            instance_buffer: None,
+            camera_batches: Vec::new(),
+            shadow_batches: Vec::new(),
             sampler,
             white_srgb,
             white_linear,
@@ -372,7 +475,6 @@ impl SceneRenderer {
             // В HDR кодирование делает проход тональной компрессии
             manual_srgb: !hdr && !color_format.is_srgb(),
             entries: Vec::new(),
-            order: Vec::new(),
             shadows,
             cascades: None,
             shadow_debug: false,
@@ -394,12 +496,17 @@ impl SceneRenderer {
         let layouts = [
             &self.frame_layout,
             &self.material_layout,
-            &self.object_layout,
             &self.joints_layout,
             &self.shadows.view_layout,
         ];
-        let (pipelines, line_pipeline, shadow_pipelines) =
-            build_pipelines(device, layouts, self.color_format, self.hdr, sources)?;
+        let (pipelines, line_pipeline, shadow_pipelines) = build_pipelines(
+            device,
+            layouts,
+            self.color_format,
+            self.hdr,
+            self.joints.storage(),
+            sources,
+        )?;
         self.pipelines = pipelines;
         self.line_pipeline = line_pipeline;
         self.shadows.pipelines = shadow_pipelines;
@@ -532,11 +639,15 @@ impl SceneRenderer {
 
         self.prepare_shadows(device, queue, snapshot, &camera, &view_proj);
         self.cull_and_collect(snapshot, alpha, &view_proj, camera_position, &mut stats);
-        self.ensure_object_capacity(device, self.entries.len() as u64);
-        if !self.object_data.is_empty() {
-            queue.write_buffer(&self.object_buffer, 0, &self.object_data);
-        }
-        self.ensure_joint_capacity(device, self.joint_slots.len() as u64);
+        self.build_batches(snapshot);
+        self.upload_instances(device, queue);
+        let joint_count = if self.joints.storage() {
+            u64::try_from(self.joint_data.len() / usize::try_from(MATRIX_SIZE).unwrap_or(64))
+                .unwrap_or(0)
+        } else {
+            u64::try_from(self.joint_slots.len()).unwrap_or(0)
+        };
+        self.ensure_joint_capacity(device, joint_count);
         if !self.joint_data.is_empty() {
             queue.write_buffer(&self.joint_buffer, 0, &self.joint_data);
         }
@@ -631,7 +742,7 @@ impl SceneRenderer {
         }
         let _zone = tracing::trace_span!("render_shadows").entered();
         let count = layers.len();
-        for (index, (matrix, view, slot)) in layers.into_iter().enumerate() {
+        for (index, (_matrix, view, slot)) in layers.into_iter().enumerate() {
             // Метка начала — в первом проходе, конца — в последнем: время всех слоёв.
             // Средним проходам метки не передаём вовсе (пустые wgpu не принимает).
             let (first, last) = (index == 0, index == count - 1);
@@ -658,40 +769,10 @@ impl SceneRenderer {
                 timestamp_writes: timestamps,
                 ..Default::default()
             });
-            let frustum = Frustum::from_view_projection(matrix);
             let view_offset = u32::try_from(slot as u64 * self.shadows.view_stride).unwrap_or(0);
             pass.set_bind_group(0, &self.shadows.view_bind_group, &[view_offset]);
-            let mut current = None;
-            for (slot, entry) in self.entries.iter().enumerate() {
-                if entry.kind.blend || !frustum.intersects_aabb(&entry.bounds) {
-                    continue;
-                }
-                let draw = &snapshot.draws[entry.index];
-                let primitive = &self.meshes[&draw.mesh][draw.primitive as usize];
-                let material = draw
-                    .material
-                    .and_then(|id| self.materials.get(&id))
-                    .unwrap_or(&self.default_material);
-                let Some((bind_group, _)) = material.bind_group.as_ref() else {
-                    continue;
-                };
-                let key = (entry.kind.skinned, entry.masked);
-                if current != Some(key) {
-                    pass.set_pipeline(&self.shadows.pipelines[&key]);
-                    current = Some(key);
-                }
-                pass.set_bind_group(1, bind_group, &[]);
-                let offset = u32::try_from(slot as u64 * self.object_stride).unwrap_or(0);
-                pass.set_bind_group(2, &self.object_bind_group, &[offset]);
-                pass.set_vertex_buffer(0, primitive.vertices.slice(..));
-                if let (Some(joint_slot), Some(skin)) = (entry.joint_slot, &primitive.skin) {
-                    let offset =
-                        u32::try_from(u64::from(joint_slot) * self.joint_stride).unwrap_or(0);
-                    pass.set_bind_group(3, &self.joint_bind_group, &[offset]);
-                    pass.set_vertex_buffer(1, skin.slice(..));
-                }
-                pass.set_index_buffer(primitive.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..primitive.index_count, 0, 0..1);
+            if let Some(batches) = self.shadow_batches.get(index) {
+                self.draw_batches(&mut pass, snapshot, batches, true, None);
             }
         }
     }
@@ -709,7 +790,7 @@ impl SceneRenderer {
         self.draw(encoder, target, snapshot, alpha, stats);
     }
 
-    /// Отсечение по фрустуму и сбор матриц видимых объектов в один буфер.
+    /// Отсечение по фрустуму. Матрицы экземпляров собирает [`Self::build_batches`].
     fn cull_and_collect(
         &mut self,
         snapshot: &FrameSnapshot,
@@ -720,7 +801,6 @@ impl SceneRenderer {
     ) {
         let _zone = tracing::trace_span!("cull").entered();
         let frustum = Frustum::from_view_projection(view_proj);
-        self.object_data.clear();
         self.entries.clear();
         self.joint_data.clear();
         self.joint_slots.clear();
@@ -772,54 +852,40 @@ impl SceneRenderer {
             };
             let joint_slot = skin.map(|(start, count)| self.joint_slot(snapshot, start, count));
             let distance = (world_bounds.center() - camera_position).length_squared();
-            let object = ObjectUniform {
-                model: model.to_cols_array_2d(),
-                normal_matrix: model.inverse().transpose().to_cols_array_2d(),
-            };
-            let offset = self.object_data.len();
-            self.object_data
-                .extend_from_slice(bytemuck::bytes_of(&object));
-            self.object_data.resize(
-                offset + usize::try_from(self.object_stride).unwrap_or(256),
-                0,
-            );
             self.entries.push(DrawEntry {
                 index,
                 kind,
                 masked,
                 distance,
                 joint_slot,
+                model,
                 bounds: world_bounds,
                 in_view,
             });
         }
-        // Порядок: непрозрачные, затем прозрачные от дальних к ближним.
-        // Матрицы уже лежат в буфере по старым позициям — запоминаем слот до сортировки.
-        let mut order: Vec<usize> = (0..self.entries.len())
-            .filter(|&i| self.entries[i].in_view)
-            .collect();
-        order.sort_by(|&a, &b| {
-            let (a, b) = (&self.entries[a], &self.entries[b]);
-            a.kind.blend.cmp(&b.kind.blend).then_with(|| {
-                if a.kind.blend {
-                    b.distance.total_cmp(&a.distance)
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            })
-        });
-        self.order = order;
     }
 
-    /// Слот матриц скелета в буфере: один на скелет, даже если у меша несколько примитивов.
+    /// Слот матриц скелета: один на скелет, даже если у меша несколько примитивов.
+    /// Со storage матрицы лежат подряд. Без него слот дополняется до размера uniform.
     fn joint_slot(&mut self, snapshot: &FrameSnapshot, start: u32, count: u32) -> u32 {
         if let Some(&slot) = self.joint_slots.get(&start) {
             return slot;
         }
+        let matrices = &snapshot.joints[start as usize..(start + count) as usize];
+        if self.joints.storage() {
+            let matrices_before =
+                self.joint_data.len() / usize::try_from(MATRIX_SIZE).unwrap_or(64);
+            let offset = u32::try_from(matrices_before).unwrap_or(0);
+            self.joint_slots.insert(start, offset);
+            for matrix in matrices {
+                self.joint_data
+                    .extend_from_slice(bytemuck::bytes_of(&matrix.to_cols_array_2d()));
+            }
+            return offset;
+        }
         let slot = u32::try_from(self.joint_slots.len()).unwrap_or(0);
         self.joint_slots.insert(start, slot);
         let begin = self.joint_data.len();
-        let matrices = &snapshot.joints[start as usize..(start + count) as usize];
         for matrix in matrices {
             self.joint_data
                 .extend_from_slice(bytemuck::bytes_of(&matrix.to_cols_array_2d()));
@@ -829,6 +895,131 @@ impl SceneRenderer {
             0,
         );
         slot
+    }
+
+    /// Непрозрачные с одним мешем и материалом — один вызов. Прозрачные по одному:
+    /// порядок «дальние раньше» нельзя отдать одному вызову. Скелеты без storage тоже
+    /// по одному: у каждого свой uniform костей.
+    fn build_batches(&mut self, snapshot: &FrameSnapshot) {
+        let mut opaque = Vec::new();
+        let mut transparent = Vec::new();
+        for (index, entry) in self.entries.iter().enumerate() {
+            if !entry.in_view {
+                continue;
+            }
+            if entry.kind.blend {
+                transparent.push(index);
+            } else {
+                opaque.push(index);
+            }
+        }
+        opaque.sort_by_key(|&index| self.batch_key(snapshot, index));
+        transparent.sort_by(|&a, &b| {
+            self.entries[b]
+                .distance
+                .total_cmp(&self.entries[a].distance)
+        });
+
+        self.instance_data.clear();
+        let mut camera = self.push_batches(&opaque, snapshot);
+        camera.append(&mut self.push_batches(&transparent, snapshot));
+        self.camera_batches = camera;
+
+        let layers = self.shadow_layer_matrices();
+        self.shadow_batches.clear();
+        for matrix in &layers {
+            let frustum = Frustum::from_view_projection(matrix);
+            let mut indices = Vec::new();
+            for (index, entry) in self.entries.iter().enumerate() {
+                if entry.kind.blend || !frustum.intersects_aabb(&entry.bounds) {
+                    continue;
+                }
+                indices.push(index);
+            }
+            indices.sort_by_key(|&index| self.batch_key(snapshot, index));
+            let batches = self.push_batches(&indices, snapshot);
+            self.shadow_batches.push(batches);
+        }
+    }
+
+    fn shadow_layer_matrices(&self) -> Vec<Mat4> {
+        let mut layers = Vec::new();
+        if let Some(cascades) = &self.cascades {
+            layers.extend(cascades.view_proj);
+        }
+        layers.extend(self.lights.shadow_views.iter().copied());
+        layers
+    }
+
+    fn batch_key(&self, snapshot: &FrameSnapshot, index: usize) -> BatchKey {
+        let entry = &self.entries[index];
+        let draw = &snapshot.draws[entry.index];
+        BatchKey {
+            kind: entry.kind,
+            masked: entry.masked,
+            mesh: draw.mesh,
+            primitive: draw.primitive,
+            material: draw.material,
+        }
+    }
+
+    /// Скелет без общего буфера костей не склеивается: смещение uniform одно на вызов.
+    fn can_merge(&self, index: usize) -> bool {
+        let entry = &self.entries[index];
+        !entry.kind.blend && (!entry.kind.skinned || self.joints.storage())
+    }
+
+    fn push_batches(&mut self, indices: &[usize], snapshot: &FrameSnapshot) -> Vec<DrawBatch> {
+        let ranges = group_runs(indices.len(), |i| {
+            let prev = indices[i - 1];
+            let curr = indices[i];
+            self.can_merge(prev) && self.batch_key(snapshot, prev) == self.batch_key(snapshot, curr)
+        });
+        ranges
+            .into_iter()
+            .map(|range| {
+                let first = u32::try_from(self.instance_data.len()).unwrap_or(u32::MAX);
+                let entry = u32::try_from(indices[range.start]).unwrap_or(0);
+                let count = u32::try_from(range.len()).unwrap_or(0);
+                for &index in &indices[range] {
+                    let item = &self.entries[index];
+                    self.instance_data.push(InstanceData::from_model(
+                        item.model,
+                        item.joint_slot.unwrap_or(0),
+                    ));
+                }
+                DrawBatch {
+                    entry,
+                    first,
+                    count,
+                }
+            })
+            .collect()
+    }
+
+    fn upload_instances(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.instance_data.is_empty() {
+            return;
+        }
+        let bytes = bytemuck::cast_slice(&self.instance_data);
+        let needed = bytes.len() as u64;
+        if self
+            .instance_buffer
+            .as_ref()
+            .is_none_or(|(_, capacity)| *capacity < needed)
+        {
+            let capacity = needed.next_power_of_two();
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("instances"),
+                size: capacity,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.instance_buffer = Some((buffer, capacity));
+        }
+        if let Some((buffer, _)) = &self.instance_buffer {
+            queue.write_buffer(buffer, 0, bytes);
+        }
     }
 
     /// Группы привязок материалов: создаются при первой нужде и пересоздаются,
@@ -906,40 +1097,13 @@ impl SceneRenderer {
             ..Default::default()
         });
         pass.set_bind_group(0, &self.frame_bind_group, &[]);
-        let mut current_pipeline = None;
-        for &slot in &self.order {
-            let DrawEntry {
-                index,
-                kind,
-                joint_slot,
-                ..
-            } = self.entries[slot];
-            let draw = &snapshot.draws[index];
-            let primitive = &self.meshes[&draw.mesh][draw.primitive as usize];
-            let material = draw
-                .material
-                .and_then(|id| self.materials.get(&id))
-                .unwrap_or(&self.default_material);
-            let Some((bind_group, _)) = material.bind_group.as_ref() else {
-                continue;
-            };
-            if current_pipeline != Some(kind) {
-                pass.set_pipeline(&self.pipelines[&kind]);
-                current_pipeline = Some(kind);
-            }
-            pass.set_bind_group(1, bind_group, &[]);
-            let offset = u32::try_from(slot as u64 * self.object_stride).unwrap_or(0);
-            pass.set_bind_group(2, &self.object_bind_group, &[offset]);
-            pass.set_vertex_buffer(0, primitive.vertices.slice(..));
-            if let (Some(joint_slot), Some(skin)) = (joint_slot, &primitive.skin) {
-                let offset = u32::try_from(u64::from(joint_slot) * self.joint_stride).unwrap_or(0);
-                pass.set_bind_group(3, &self.joint_bind_group, &[offset]);
-                pass.set_vertex_buffer(1, skin.slice(..));
-            }
-            pass.set_index_buffer(primitive.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..primitive.index_count, 0, 0..1);
-            stats.drawn += 1;
-        }
+        self.draw_batches(
+            &mut pass,
+            snapshot,
+            &self.camera_batches,
+            false,
+            Some(stats),
+        );
         // Отладочные линии — поверх сцены, с проверкой глубины
         if let Some((buffer, _)) = &self.line_buffer
             && self.line_count > 0
@@ -1065,32 +1229,92 @@ impl SceneRenderer {
             return;
         }
         self.joint_capacity = count.next_power_of_two();
-        let (buffer, bind_group) = create_object_buffer(
-            device,
-            &self.joints_layout,
-            self.joint_stride,
-            self.joint_capacity,
-            JOINTS_SIZE,
-        );
+        let (buffer, bind_group) = if self.joints.storage() {
+            create_joint_storage(
+                device,
+                &self.joints_layout,
+                self.joint_capacity * MATRIX_SIZE,
+            )
+        } else {
+            create_object_buffer(
+                device,
+                &self.joints_layout,
+                self.joint_stride,
+                self.joint_capacity,
+                JOINTS_SIZE,
+            )
+        };
         self.joint_buffer = buffer;
         self.joint_bind_group = bind_group;
     }
 
-    fn ensure_object_capacity(&mut self, device: &wgpu::Device, count: u64) {
-        if count <= self.object_capacity {
+    /// `shadow` — пайплайны карты теней. Статистика считается только для прохода сцены.
+    fn draw_batches<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        snapshot: &FrameSnapshot,
+        batches: &[DrawBatch],
+        shadow: bool,
+        mut stats: Option<&mut DrawStats>,
+    ) {
+        // [Rust] `Buffer` — хэндл, клон дешёвый. Держать ссылку на поле `self` нельзя:
+        // ниже тот же `self` отдаёт пайплайны и меши.
+        let Some(instances) = self
+            .instance_buffer
+            .as_ref()
+            .map(|(buffer, _)| buffer.clone())
+        else {
             return;
+        };
+        let mut scene_pipeline = None;
+        let mut shadow_pipeline = None;
+        for batch in batches {
+            let entry = &self.entries[batch.entry as usize];
+            let draw = &snapshot.draws[entry.index];
+            let primitive = &self.meshes[&draw.mesh][draw.primitive as usize];
+            let material = draw
+                .material
+                .and_then(|id| self.materials.get(&id))
+                .unwrap_or(&self.default_material);
+            let Some((bind_group, _)) = material.bind_group.as_ref() else {
+                continue;
+            };
+            if shadow {
+                let key = (entry.kind.skinned, entry.masked);
+                if shadow_pipeline != Some(key) {
+                    pass.set_pipeline(&self.shadows.pipelines[&key]);
+                    shadow_pipeline = Some(key);
+                }
+            } else if scene_pipeline != Some(entry.kind) {
+                pass.set_pipeline(&self.pipelines[&entry.kind]);
+                scene_pipeline = Some(entry.kind);
+            }
+            pass.set_bind_group(1, bind_group, &[]);
+            pass.set_vertex_buffer(0, primitive.vertices.slice(..));
+            let instance_slot = if let (Some(joint_slot), Some(skin)) =
+                (entry.joint_slot, primitive.skin.as_ref())
+            {
+                if self.joints.storage() {
+                    pass.set_bind_group(2, &self.joint_bind_group, &[]);
+                } else {
+                    let offset =
+                        u32::try_from(u64::from(joint_slot) * self.joint_stride).unwrap_or(0);
+                    pass.set_bind_group(2, &self.joint_bind_group, &[offset]);
+                }
+                pass.set_vertex_buffer(1, skin.slice(..));
+                2
+            } else {
+                1
+            };
+            pass.set_vertex_buffer(instance_slot, instances.slice(..));
+            pass.set_index_buffer(primitive.indices.slice(..), wgpu::IndexFormat::Uint32);
+            let end = batch.first.saturating_add(batch.count);
+            pass.draw_indexed(0..primitive.index_count, 0, batch.first..end);
+            if let Some(stats) = stats.as_mut() {
+                stats.drawn += batch.count;
+                stats.draw_calls += 1;
+            }
         }
-        // Растим с запасом, чтобы не пересоздавать каждый кадр
-        self.object_capacity = count.next_power_of_two();
-        let (buffer, bind_group) = create_object_buffer(
-            device,
-            &self.object_layout,
-            self.object_stride,
-            self.object_capacity,
-            OBJECT_SIZE,
-        );
-        self.object_buffer = buffer;
-        self.object_bind_group = bind_group;
     }
 
     fn prepare_material(&mut self, device: &wgpu::Device, id: AssetId<Material>) {
@@ -1158,11 +1382,11 @@ impl SceneRenderer {
     }
 }
 
-/// Раскладки групп привязок: 0 — кадр, 1 — материал, 2 — объект.
+/// Раскладки групп привязок: 0 — кадр, 1 — материал, 2 — кости.
 fn create_layouts(
     device: &wgpu::Device,
+    joint_storage: bool,
 ) -> (
-    wgpu::BindGroupLayout,
     wgpu::BindGroupLayout,
     wgpu::BindGroupLayout,
     wgpu::BindGroupLayout,
@@ -1238,16 +1462,47 @@ fn create_layouts(
             },
         ],
     });
-    let object = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("object"),
-        entries: &[uniform(0, wgpu::ShaderStages::VERTEX, true)],
-    });
-    // Матрицы костей скелетного меша — тоже по смещению, как объекты
+    // Со storage все скелеты в одном буфере. Без него — один скелет на вызов, по смещению.
     let joints = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("joints"),
-        entries: &[uniform(0, wgpu::ShaderStages::VERTEX, true)],
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: if joint_storage {
+                    wgpu::BufferBindingType::Storage { read_only: true }
+                } else {
+                    wgpu::BufferBindingType::Uniform
+                },
+                has_dynamic_offset: !joint_storage,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
     });
-    (frame, material, object, joints)
+    (frame, material, joints)
+}
+
+fn create_joint_storage(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    size: u64,
+) -> (wgpu::Buffer, wgpu::BindGroup) {
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("joints"),
+        size: size.max(MATRIX_SIZE),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("joints"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    });
+    (buffer, bind_group)
 }
 
 fn create_frame_bind_group(
@@ -1483,39 +1738,56 @@ type Pipelines = (
 /// Все пайплайны сцены из исходников шейдеров. Ошибка — текстом, без паники.
 fn build_pipelines(
     device: &wgpu::Device,
-    layouts: [&wgpu::BindGroupLayout; 5],
+    layouts: [&wgpu::BindGroupLayout; 4],
     color_format: wgpu::TextureFormat,
     hdr: bool,
+    joint_storage: bool,
     sources: &HashMap<String, String>,
 ) -> Result<Pipelines, String> {
-    let defines: &[&str] = if hdr { &["HDR_OUTPUT"] } else { &[] };
-    let pbr = crate::shaders::compile(device, sources, "shaders/pbr.wgsl", defines)?;
-    let debug = crate::shaders::compile(device, sources, "shaders/debug.wgsl", defines)?;
-    let shadow = crate::shaders::compile(device, sources, "shaders/shadow.wgsl", &[])?;
-    let [frame, material, object, joints, shadow_view] = layouts;
+    let mut pbr_defines = Vec::new();
+    if hdr {
+        pbr_defines.push("HDR_OUTPUT");
+    }
+    if joint_storage {
+        pbr_defines.push("JOINT_STORAGE");
+    }
+    let shadow_defines: &[&str] = if joint_storage {
+        &["JOINT_STORAGE"]
+    } else {
+        &[]
+    };
+    let pbr = crate::shaders::compile(device, sources, "shaders/pbr.wgsl", &pbr_defines)?;
+    let debug = crate::shaders::compile(device, sources, "shaders/debug.wgsl", &pbr_defines)?;
+    let shadow = crate::shaders::compile(device, sources, "shaders/shadow.wgsl", shadow_defines)?;
+    let [frame, material, joints, shadow_view] = layouts;
     crate::shaders::checked(device, || {
         (
-            create_pipelines(
-                device,
-                [frame, material, object, joints],
-                color_format,
-                &pbr,
-            ),
+            create_pipelines(device, [frame, material, joints], color_format, &pbr),
             create_line_pipeline(device, frame, color_format, &debug),
-            create_shadow_pipelines(device, [shadow_view, material, object, joints], &shadow),
+            create_shadow_pipelines(device, [shadow_view, material, joints], &shadow),
         )
     })
+}
+
+fn instance_layout(
+    attributes: &'static [wgpu::VertexAttribute],
+) -> wgpu::VertexBufferLayout<'static> {
+    wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<InstanceData>() as u64,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes,
+    }
 }
 
 /// Пайплайны теней: скелетный × альфа-маска. Только глубина, без цвета.
 fn create_shadow_pipelines(
     device: &wgpu::Device,
-    layouts: [&wgpu::BindGroupLayout; 4],
+    layouts: [&wgpu::BindGroupLayout; 3],
     shader: &wgpu::ShaderModule,
 ) -> HashMap<(bool, bool), wgpu::RenderPipeline> {
     let static_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("shadow"),
-        bind_group_layouts: &[Some(layouts[0]), Some(layouts[1]), Some(layouts[2])],
+        bind_group_layouts: &[Some(layouts[0]), Some(layouts[1])],
         ..Default::default()
     });
     let skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1533,8 +1805,10 @@ fn create_shadow_pipelines(
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &wgpu::vertex_attr_array![3 => Uint16x4, 4 => Float32x4],
     });
-    let skinned_buffers = [vertex_layout.clone(), skin_layout];
-    let static_buffers = [vertex_layout];
+    let static_instance = Some(instance_layout(SHADOW_STATIC_ATTRS));
+    let skinned_instance = Some(instance_layout(SHADOW_SKINNED_ATTRS));
+    let skinned_buffers = [vertex_layout.clone(), skin_layout, skinned_instance];
+    let static_buffers = [vertex_layout, static_instance];
     let mut pipelines = HashMap::new();
     for skinned in [false, true] {
         for masked in [false, true] {
@@ -1590,14 +1864,14 @@ fn create_shadow_pipelines(
 /// PBR-пайплайны для всех сочетаний: прозрачность × двусторонность × скиннинг.
 fn create_pipelines(
     device: &wgpu::Device,
-    layouts: [&wgpu::BindGroupLayout; 4],
+    layouts: [&wgpu::BindGroupLayout; 3],
     color_format: wgpu::TextureFormat,
     shader: &wgpu::ShaderModule,
 ) -> HashMap<PipelineKind, wgpu::RenderPipeline> {
-    // Обычным мешам группа костей (3) не нужна — у них своя раскладка из трёх групп
+    // Обычным мешам группа костей не нужна.
     let static_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("pbr"),
-        bind_group_layouts: &[Some(layouts[0]), Some(layouts[1]), Some(layouts[2])],
+        bind_group_layouts: &[Some(layouts[0]), Some(layouts[1])],
         ..Default::default()
     });
     let skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1700,8 +1974,13 @@ fn create_pipeline(
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &wgpu::vertex_attr_array![3 => Uint16x4, 4 => Float32x4],
     });
-    let skinned_buffers = [vertex_layout.clone(), skin_layout];
-    let static_buffers = [vertex_layout];
+    let instance = Some(instance_layout(if kind.skinned {
+        PBR_SKINNED_ATTRS
+    } else {
+        PBR_STATIC_ATTRS
+    }));
+    let skinned_buffers = [vertex_layout.clone(), skin_layout, instance.clone()];
+    let static_buffers = [vertex_layout, instance];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("pbr"),
         layout: Some(layout),
@@ -1748,4 +2027,34 @@ fn create_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// Склеивает подряд идущие элементы. `continues(i)` — элемент `i` в том же вызове, что и `i - 1`.
+fn group_runs(len: usize, continues: impl Fn(usize) -> bool) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    for i in 1..=len {
+        if i == len || !continues(i) {
+            ranges.push(start..i);
+            start = i;
+        }
+    }
+    ranges
+}
+
+#[cfg(test)]
+mod tests {
+    use super::group_runs;
+
+    #[test]
+    fn identical_instances_become_one_draw() {
+        let ranges = group_runs(5, |i| matches!(i, 1 | 2 | 4));
+        assert_eq!(ranges, vec![0..3, 3..5]);
+    }
+
+    #[test]
+    fn transparent_and_mixed_meshes_stay_split() {
+        let ranges = group_runs(3, |_| false);
+        assert_eq!(ranges, vec![0..1, 1..2, 2..3]);
+    }
 }

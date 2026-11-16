@@ -123,8 +123,9 @@ pub struct RenderStats {
     pub snapshots_skipped: u64,
     /// Время работы последнего кадра рендера на CPU (без ожидания кадра экрана).
     pub frame_cpu_time: Duration,
-    /// Нарисовано и отсечено примитивов в последнем кадре.
+    /// Нарисовано и отсечено примитивов в последнем кадре. `draw_calls` — вызовы прохода сцены.
     pub drawn: u64,
+    pub draw_calls: u64,
     pub culled: u64,
     /// Время GPU проходов: сцена и интерфейс. `None` — нет данных (метки не поддерживаются
     /// или проход не выполнялся).
@@ -453,6 +454,7 @@ fn update_stats(frontend: NonSend<RenderFrontend>, mut stats: ResMut<RenderStats
     stats.snapshots_skipped = s.snapshots_skipped.load(Ordering::Relaxed);
     stats.frame_cpu_time = Duration::from_nanos(s.frame_cpu_nanos.load(Ordering::Relaxed));
     stats.drawn = s.drawn.load(Ordering::Relaxed);
+    stats.draw_calls = s.draw_calls.load(Ordering::Relaxed);
     let micros =
         |value: u64| (value != u64::MAX && value != 0).then(|| Duration::from_micros(value));
     stats.gpu_shadow_time = micros(s.gpu_shadow_us.load(Ordering::Relaxed));

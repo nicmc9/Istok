@@ -1,7 +1,19 @@
 // Карта теней: глубина сцены с точки зрения солнца, по каскаду за проход.
-// Группа 0 — матрица каскада (смещение в буфере), 1–3 — как у PBR (материал, объект, кости).
+// Группа 0 — матрица каскада (смещение в буфере), 1 — материал, 2 — кости скелетного меша.
+// Матрица модели — атрибут экземпляра. Нормали тени не нужны, в раскладке их нет.
 
 #include "mesh.wgsl"
+
+struct ShadowInstanceInput {
+    @location(5) model0: vec4<f32>,
+    @location(6) model1: vec4<f32>,
+    @location(7) model2: vec4<f32>,
+    @location(8) model3: vec4<f32>,
+};
+
+fn shadow_model(inst: ShadowInstanceInput) -> mat4x4<f32> {
+    return mat4x4<f32>(inst.model0, inst.model1, inst.model2, inst.model3);
+}
 
 struct ShadowView {
     view_proj: mat4x4<f32>,
@@ -14,9 +26,9 @@ struct ShadowOutput {
 };
 
 @vertex
-fn vs_main(in: VertexInput) -> ShadowOutput {
+fn vs_main(in: VertexInput, inst: ShadowInstanceInput) -> ShadowOutput {
     var out: ShadowOutput;
-    out.clip_position = shadow_view.view_proj * object.model * vec4<f32>(in.position, 1.0);
+    out.clip_position = shadow_view.view_proj * shadow_model(inst) * vec4<f32>(in.position, 1.0);
     out.uv = in.uv;
     return out;
 }
@@ -26,9 +38,13 @@ fn vs_skinned(
     in: VertexInput,
     @location(3) joint_indices: vec4<u32>,
     @location(4) joint_weights: vec4<f32>,
+    inst: ShadowInstanceInput,
+    @location(13) joint_offset: vec4<u32>,
 ) -> ShadowOutput {
     var out: ShadowOutput;
-    let world = skin_matrix(joint_indices, joint_weights) * vec4<f32>(in.position, 1.0);
+    let world = shadow_model(inst)
+        * skin_matrix(joint_offset.x, joint_indices, joint_weights)
+        * vec4<f32>(in.position, 1.0);
     out.clip_position = shadow_view.view_proj * world;
     out.uv = in.uv;
     return out;

@@ -1,4 +1,5 @@
 use std::any::TypeId;
+use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
@@ -57,6 +58,18 @@ impl<T> PartialEq for AssetId<T> {
     }
 }
 impl<T> Eq for AssetId<T> {}
+impl<T> Ord for AssetId<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.index
+            .cmp(&other.index)
+            .then(self.generation.cmp(&other.generation))
+    }
+}
+impl<T> PartialOrd for AssetId<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 impl<T> Hash for AssetId<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.index.hash(state);

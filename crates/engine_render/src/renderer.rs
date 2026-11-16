@@ -24,6 +24,7 @@ pub(crate) struct SharedStats {
     pub snapshots_skipped: AtomicU64,
     pub frame_cpu_nanos: AtomicU64,
     pub drawn: AtomicU64,
+    pub draw_calls: AtomicU64,
     /// Время GPU проходов, мкс; 0 или `u64::MAX` — нет данных.
     pub gpu_shadow_us: AtomicU64,
     pub gpu_scene_us: AtomicU64,
@@ -314,7 +315,9 @@ impl Renderer {
                 );
                 let caps = GpuCaps::from_probe(crate::caps::Probe::from_adapter(&gpu.adapter));
                 tracing::info!("{}", caps.report());
-                self.stats.gpu_tier.store(caps.tier_code(), Ordering::Relaxed);
+                self.stats
+                    .gpu_tier
+                    .store(caps.tier_code(), Ordering::Relaxed);
                 self.caps = caps;
                 self.gpu = Some(gpu);
                 self.init = None;
@@ -433,6 +436,7 @@ impl Renderer {
             &gpu.queue,
             if hdr { HDR_FORMAT } else { view_format },
             hdr,
+            self.caps.vertex_storage(),
             &self.shader_sources,
         ));
         self.text = TextRenderer::new(
@@ -491,6 +495,9 @@ impl Renderer {
         self.stats
             .drawn
             .store(u64::from(draw.drawn), Ordering::Relaxed);
+        self.stats
+            .draw_calls
+            .store(u64::from(draw.draw_calls), Ordering::Relaxed);
         self.stats
             .culled
             .store(u64::from(draw.culled), Ordering::Relaxed);
