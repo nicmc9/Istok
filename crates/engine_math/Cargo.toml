@@ -1,0 +1,21 @@
+[package]
+name = "engine_math"
+description = "Математика движка: псевдонимы типов на glam и геометрия"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+glam = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+# Бенчмарк: `cargo bench -p engine_math`. harness = false — свой main у criterion вместо встроенного
+[[bench]]
+name = "geometry"
+harness = false

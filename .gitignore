@@ -1,0 +1,14 @@
+/target
+**/target
+/platforms/android/build
+/platforms/ios/build
+/platforms/web/pkg
+/platforms/web/assets
+.DS_Store
+
+# Настройки IDE у каждого свои
+/.idea
+
+# Ресурсы с ограниченной или неподтверждённой лицензией (см. assets/LICENSES.md)
+/assets/models/khronos/Sponza
+/assets/models/orc

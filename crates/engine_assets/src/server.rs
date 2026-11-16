@@ -1,0 +1,905 @@
+use std::any::TypeId;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
+
+use crossbeam_channel::{Receiver, Sender};
+use engine_core::tasks;
+use engine_ecs::prelude::*;
+use engine_net::Net;
+use tracing::Instrument;
+
+use crate::handle::{StrongRef, short_type_name};
+use crate::loader::{AnyAsset, ErasedLoader, Labeled, LoadContext};
+use crate::source::{self, Bytes};
+use crate::{
+    ASSETS_BUDGET_IMAGE_MB, ASSETS_BUDGET_MESH_MB, ASSETS_BUDGET_OTHER_MB, ASSETS_STRICT, Asset,
+    AssetError, AssetEvent, AssetId, AssetLoader, AssetPath, AssetStatus, Assets, Handle,
+    MemoryCategory, MemoryUsage, UntypedAssetId,
+};
+
+/// Сервер ресурсов: выдаёт хэндлы, запускает загрузки, применяет результаты.
+/// Дёшево клонируется (внутри `Arc`) — его копия есть у каждой задачи загрузки.
+#[derive(Clone, Resource)]
+pub struct AssetServer {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
+    state: Mutex<State>,
+    loaders: RwLock<Vec<Arc<dyn ErasedLoader>>>,
+    types: RwLock<HashMap<TypeId, TypeOps>>,
+    /// Готовые загрузки → система `apply_loads`.
+    results: (Sender<LoadResult>, Receiver<LoadResult>),
+    /// Исчез последний сильный хэндл → система `apply_loads` выгрузит ресурс.
+    drops: (Sender<UntypedAssetId>, Receiver<UntypedAssetId>),
+    net: RwLock<Option<Net>>,
+    root: RwLock<String>,
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+    watchers: Mutex<Vec<crate::watch::Watcher>>,
+    /// Встроенные в бинарник файлы `engine://...` (шейдеры движка).
+    embedded: RwLock<HashMap<String, &'static [u8]>>,
+    /// Папка вместо встроенных файлов — для правки на лету при разработке.
+    engine_dir: RwLock<Option<std::path::PathBuf>>,
+}
+
+#[derive(Default)]
+struct State {
+    /// Для каждого типа — свободные индексы и поколения.
+    allocators: HashMap<TypeId, Allocator>,
+    by_path: HashMap<(AssetPath, TypeId), UntypedAssetId>,
+    infos: HashMap<UntypedAssetId, Info>,
+    /// Растёт при каждом использовании: по нему выгружаем самый старый ресурс.
+    clock: u64,
+    /// Предупреждение «бюджет превышен, выгружать нечего» уже написано для группы.
+    budget_warned: [bool; 3],
+}
+
+struct Info {
+    path: Option<AssetPath>,
+    status: AssetStatus,
+    /// Слабая ссылка на владение: по ней повторный `load` того же пути отдаёт тот же ресурс.
+    owner: Weak<StrongRef>,
+    dependencies: Vec<UntypedAssetId>,
+    bytes: u64,
+    category: MemoryCategory,
+    /// Момент последнего использования. Меньше — кандидат на выгрузку раньше.
+    last_used: u64,
+}
+
+#[derive(Default)]
+struct Allocator {
+    generations: Vec<u32>,
+    free: Vec<u32>,
+}
+
+impl Allocator {
+    fn allocate(&mut self) -> (u32, u32) {
+        if let Some(index) = self.free.pop() {
+            (index, self.generations[index as usize])
+        } else {
+            let index = u32::try_from(self.generations.len()).expect("слишком много ресурсов");
+            self.generations.push(0);
+            (index, 0)
+        }
+    }
+
+    fn free(&mut self, index: u32) {
+        // Новое поколение: старые id с этим индексом больше ничего не найдут
+        self.generations[index as usize] += 1;
+        self.free.push(index);
+    }
+}
+
+/// Операции над ресурсами конкретного типа, сохранённые как указатели на функции.
+// [Rust] `fn(...)` — обычный указатель на функцию. `apply_loaded::<T>` — отдельная функция
+// для каждого T (мономорфизация шаблона), и сервер вызывает её, не зная T.
+#[derive(Clone, Copy)]
+struct TypeOps {
+    name: &'static str,
+    apply_loaded: fn(&mut World, UntypedAssetId, AnyAsset),
+    apply_failed: fn(&mut World, UntypedAssetId, AssetError),
+    remove: fn(&mut World, UntypedAssetId),
+}
+
+struct LoadResult {
+    id: UntypedAssetId,
+    result: Result<AnyAsset, AssetError>,
+    labeled: Vec<Labeled>,
+    dependencies: Vec<UntypedAssetId>,
+}
+
+impl std::fmt::Debug for AssetServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = self.lock();
+        f.debug_struct("AssetServer")
+            .field("assets", &state.infos.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl AssetServer {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                state: Mutex::default(),
+                loaders: RwLock::default(),
+                types: RwLock::default(),
+                results: crossbeam_channel::unbounded(),
+                drops: crossbeam_channel::unbounded(),
+                net: RwLock::default(),
+                root: RwLock::new(String::new()),
+                #[cfg(not(any(
+                    target_arch = "wasm32",
+                    target_os = "android",
+                    target_os = "ios"
+                )))]
+                watchers: Mutex::default(),
+                embedded: RwLock::default(),
+                engine_dir: RwLock::default(),
+            }),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Загружает ресурс. Хэндл возвращается сразу; повторный вызов с тем же путём и
+    /// типом вернёт тот же ресурс.
+    pub fn load<T: Asset>(&self, path: &str) -> Handle<T> {
+        let path = AssetPath::new(path);
+        let key = (path.clone(), TypeId::of::<T>());
+        let mut state = self.lock();
+        if let Some(&id) = state.by_path.get(&key) {
+            // Сначала тик: info занят картой, часы из той же state трогать вместе нельзя
+            let tick = bump(&mut state.clock);
+            let info = state.infos.get_mut(&id).expect("путь без записи");
+            info.last_used = tick;
+            let owner = info.owner.upgrade().unwrap_or_else(|| {
+                // Все хэндлы уже уничтожены, но выгрузка ещё не прошла — возрождаем владение
+                let owner = Arc::new(self.strong_ref(id));
+                info.owner = Arc::downgrade(&owner);
+                owner
+            });
+            return Handle::strong(typed(id), owner);
+        }
+        drop(state);
+
+        let handle = self.allocate::<T>(Some(path.clone()));
+        if path.label().is_some() {
+            // Вложенный ресурс: грузим файл целиком, метку заполнит его загрузчик
+            self.load_parent_of(&path, handle.untyped_id());
+        } else {
+            self.spawn_load(handle.untyped_id(), path, Some(TypeId::of::<T>()));
+        }
+        handle
+    }
+
+    /// Путь, по которому ресурс загружен или зарегистрирован (`Assets::add_named`).
+    /// `None` — ресурс создан кодом без имени.
+    pub fn path(&self, id: UntypedAssetId) -> Option<String> {
+        let state = self.lock();
+        state
+            .infos
+            .get(&id)?
+            .path
+            .as_ref()
+            .map(|p| p.as_str().to_owned())
+    }
+
+    /// Состояние ресурса.
+    pub fn status(&self, id: UntypedAssetId) -> AssetStatus {
+        self.lock()
+            .infos
+            .get(&id)
+            .map_or(AssetStatus::Loading, |info| info.status.clone())
+    }
+
+    /// Загружен сам ресурс и все его зависимости (рекурсивно).
+    /// `Err` — что-то упало, в ошибке — что именно.
+    pub fn is_loaded_with_dependencies(&self, id: UntypedAssetId) -> Result<bool, AssetError> {
+        let state = self.lock();
+        let mut stack = vec![id];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(info) = state.infos.get(&id) else {
+                return Ok(false);
+            };
+            match &info.status {
+                AssetStatus::Loading => return Ok(false),
+                AssetStatus::Failed(error) => return Err(error.clone()),
+                AssetStatus::Ready => stack.extend(&info.dependencies),
+            }
+        }
+        Ok(true)
+    }
+
+    /// Ресурсы, загрузка которых упала: путь и ошибка.
+    pub fn failed(&self) -> Vec<(String, AssetError)> {
+        let state = self.lock();
+        let mut failed: Vec<_> = state
+            .infos
+            .values()
+            .filter_map(|info| match &info.status {
+                AssetStatus::Failed(error) => Some((
+                    info.path
+                        .as_ref()
+                        .map_or_else(String::new, ToString::to_string),
+                    error.clone(),
+                )),
+                _ => None,
+            })
+            .collect();
+        failed.sort_by(|a, b| a.0.cmp(&b.0));
+        failed
+    }
+
+    /// Память загруженных ресурсов по группам.
+    pub fn memory(&self) -> MemoryUsage {
+        let state = self.lock();
+        let mut usage = MemoryUsage::default();
+        for info in state.infos.values() {
+            usage.add(info.category, info.bytes);
+        }
+        usage
+    }
+
+    /// Сколько ресурсов загружается, загружено, упало.
+    pub fn counts(&self) -> (usize, usize, usize) {
+        let state = self.lock();
+        let mut counts = (0, 0, 0);
+        for info in state.infos.values() {
+            match info.status {
+                AssetStatus::Loading => counts.0 += 1,
+                AssetStatus::Ready => counts.1 += 1,
+                AssetStatus::Failed(_) => counts.2 += 1,
+            }
+        }
+        counts
+    }
+
+    // ---------- внутреннее ----------
+
+    pub(crate) fn register_type<T: Asset>(&self) {
+        self.inner
+            .types
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                TypeId::of::<T>(),
+                TypeOps {
+                    name: short_type_name::<T>(),
+                    apply_loaded: apply_loaded::<T>,
+                    apply_failed: apply_failed::<T>,
+                    remove: remove::<T>,
+                },
+            );
+    }
+
+    pub(crate) fn register_loader<L: AssetLoader>(&self, loader: L) {
+        self.inner
+            .loaders
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Arc::new(loader));
+    }
+
+    pub(crate) fn configure(&self, net: Option<Net>, root: String) {
+        *self
+            .inner
+            .net
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = net;
+        *self
+            .inner
+            .root
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = root;
+    }
+
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+    pub(crate) fn start_watching(&self, root: &std::path::Path, prefix: &'static str) {
+        if let Some(watcher) = crate::watch::Watcher::start(root, prefix) {
+            self.inner
+                .watchers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(watcher);
+        }
+    }
+
+    /// Регистрирует встроенный файл: `register_embedded("engine://shaders/pbr.wgsl", bytes)`.
+    /// [Rust] `&'static [u8]` — данные, живущие всю программу: результат `include_bytes!`.
+    pub fn register_embedded(&self, path: &str, data: &'static [u8]) {
+        self.inner
+            .embedded
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(path.to_owned(), data);
+    }
+
+    pub(crate) fn set_engine_dir(&self, dir: std::path::PathBuf) {
+        tracing::info!("Файлы движка (engine://) — из папки {}", dir.display());
+        *self
+            .inner
+            .engine_dir
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Some(dir);
+    }
+
+    /// Перезагружает все ресурсы этого файла в те же хэндлы. Старое значение остаётся
+    /// видимым, пока не придёт новое, — без мигания заглушкой.
+    pub fn reload(&self, file: &str) {
+        let path = AssetPath::new(file);
+        let targets: Vec<(UntypedAssetId, TypeId)> = self
+            .lock()
+            .infos
+            .iter()
+            .filter(|(_, info)| info.path.as_ref() == Some(&path))
+            .map(|(id, _)| (*id, id.type_id))
+            .collect();
+        for (id, type_id) in targets {
+            tracing::info!("Перезагрузка: {path}");
+            self.spawn_load(id, path.clone(), Some(type_id));
+        }
+    }
+
+    fn strong_ref(&self, id: UntypedAssetId) -> StrongRef {
+        StrongRef {
+            id,
+            drop_sender: self.inner.drops.0.clone(),
+        }
+    }
+
+    /// Выделяет id (или находит существующий по пути) и возвращает сильный хэндл.
+    pub(crate) fn allocate<T: Asset>(&self, path: Option<AssetPath>) -> Handle<T> {
+        let type_id = TypeId::of::<T>();
+        let mut state = self.lock();
+        if let Some(path) = &path
+            && let Some(&id) = state.by_path.get(&(path.clone(), type_id))
+        {
+            let tick = bump(&mut state.clock);
+            let info = state.infos.get_mut(&id).expect("путь без записи");
+            info.last_used = tick;
+            let owner = info.owner.upgrade().unwrap_or_else(|| {
+                let owner = Arc::new(self.strong_ref(id));
+                info.owner = Arc::downgrade(&owner);
+                owner
+            });
+            return Handle::strong(typed(id), owner);
+        }
+        let (index, generation) = state.allocators.entry(type_id).or_default().allocate();
+        let id = UntypedAssetId {
+            type_id,
+            index,
+            generation,
+        };
+        let owner = Arc::new(self.strong_ref(id));
+        if let Some(path) = &path {
+            state.by_path.insert((path.clone(), type_id), id);
+        }
+        let mut info = Info::loading(path, Arc::downgrade(&owner));
+        info.last_used = bump(&mut state.clock);
+        state.infos.insert(id, info);
+        Handle::strong(typed(id), owner)
+    }
+
+    pub(crate) fn set_status(&self, id: UntypedAssetId, status: AssetStatus) {
+        if let Some(info) = self.lock().infos.get_mut(&id) {
+            info.status = status;
+        }
+    }
+
+    pub(crate) async fn read(&self, path: &AssetPath) -> Result<Bytes, AssetError> {
+        if let Some(relative) = path.file().strip_prefix("engine://") {
+            return self.read_engine(path.file(), relative);
+        }
+        let net = self
+            .inner
+            .net
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let root = self
+            .inner
+            .root
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        source::read(path, &root, net.as_ref()).await
+    }
+
+    /// Файл движка: из папки разработки (если задана) или встроенный в бинарник.
+    /// На Web файловой системы нет — только встроенные.
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+    fn read_engine(&self, full: &str, relative: &str) -> Result<Bytes, AssetError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(dir) = self
+            .inner
+            .engine_dir
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            return std::fs::read(dir.join(relative))
+                .map(Bytes::from)
+                .map_err(|error| AssetError::Io {
+                    path: full.to_owned(),
+                    reason: error.to_string(),
+                });
+        }
+        self.inner
+            .embedded
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(full)
+            .map(|data| Bytes::from(*data))
+            .ok_or_else(|| AssetError::NotFound(full.to_owned()))
+    }
+
+    /// Вложенный ресурс запрошен до загрузки файла: запускаем загрузку файла
+    /// (тип узнаём по загрузчику для расширения) и держим его, пока жив вложенный.
+    fn load_parent_of(&self, path: &AssetPath, child: UntypedAssetId) {
+        let file = AssetPath::new(path.file());
+        let Some(loader) = self.loader_for(&file, None) else {
+            self.fail_now(child, AssetError::NoLoader(file.to_string()));
+            return;
+        };
+        let type_id = loader.asset_type();
+        let mut state = self.lock();
+        let parent = if let Some(&id) = state.by_path.get(&(file.clone(), type_id)) {
+            id
+        } else {
+            let (index, generation) = state.allocators.entry(type_id).or_default().allocate();
+            let id = UntypedAssetId {
+                type_id,
+                index,
+                generation,
+            };
+            state.by_path.insert((file.clone(), type_id), id);
+            let mut info = Info::loading(Some(file.clone()), Weak::new());
+            info.last_used = bump(&mut state.clock);
+            state.infos.insert(id, info);
+            drop(state);
+            self.spawn_load(id, file, None);
+            state = self.lock();
+            id
+        };
+        // Вложенный зависит от файла: файл не выгрузится, пока жив вложенный
+        if let Some(info) = state.infos.get_mut(&child) {
+            info.dependencies.push(parent);
+        }
+    }
+
+    fn loader_for(
+        &self,
+        path: &AssetPath,
+        asset_type: Option<TypeId>,
+    ) -> Option<Arc<dyn ErasedLoader>> {
+        let extension = path.extension()?;
+        let loaders = self
+            .inner
+            .loaders
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        loaders
+            .iter()
+            .filter(|loader| loader.extensions().contains(&extension.as_str()))
+            .find(|loader| asset_type.is_none_or(|t| loader.asset_type() == t))
+            .or_else(|| {
+                loaders
+                    .iter()
+                    .find(|loader| loader.extensions().contains(&extension.as_str()))
+            })
+            .cloned()
+    }
+
+    fn fail_now(&self, id: UntypedAssetId, error: AssetError) {
+        let _ = self.inner.results.0.send(LoadResult {
+            id,
+            result: Err(error),
+            labeled: Vec::new(),
+            dependencies: Vec::new(),
+        });
+    }
+
+    fn spawn_load(&self, id: UntypedAssetId, path: AssetPath, asset_type: Option<TypeId>) {
+        let Some(loader) = self.loader_for(&path, asset_type) else {
+            self.fail_now(id, AssetError::NoLoader(path.to_string()));
+            return;
+        };
+        if let Some(requested) = asset_type
+            && loader.asset_type() != requested
+        {
+            let requested = self.type_name(requested);
+            self.fail_now(
+                id,
+                AssetError::WrongType {
+                    loader: loader.loader_name(),
+                    produced: loader.asset_type_name(),
+                    requested,
+                },
+            );
+            return;
+        }
+        let server = self.clone();
+        // [Rust] `detach` — задача работает сама по себе, результат придёт через канал
+        let span = tracing::trace_span!("asset_load", path = path.as_str());
+        tasks::spawn_io(
+            async move {
+                let mut ctx = LoadContext::new(server.clone(), path.clone());
+                let result = match server.read(&path).await {
+                    Ok(bytes) => loader.load(bytes, &mut ctx).await,
+                    Err(error) => Err(error),
+                };
+                let _ = server.inner.results.0.send(LoadResult {
+                    id,
+                    result,
+                    labeled: std::mem::take(&mut ctx.labeled),
+                    dependencies: std::mem::take(&mut ctx.dependencies),
+                });
+            }
+            .instrument(span),
+        )
+        .detach();
+    }
+
+    fn type_name(&self, type_id: TypeId) -> &'static str {
+        self.inner
+            .types
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&type_id)
+            .map_or("?", |ops| ops.name)
+    }
+
+    fn ops(&self, type_id: TypeId) -> Option<TypeOps> {
+        self.inner
+            .types
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&type_id)
+            .copied()
+    }
+
+    fn apply_result(&self, world: &mut World, result: LoadResult) {
+        let LoadResult {
+            id,
+            result,
+            labeled,
+            dependencies,
+        } = result;
+        let path = {
+            let mut state = self.lock();
+            let Some(info) = state.infos.get_mut(&id) else {
+                return; // ресурс выгружен, пока грузился
+            };
+            info.dependencies.extend(dependencies);
+            info.status = match &result {
+                Ok(_) => AssetStatus::Ready,
+                Err(error) => AssetStatus::Failed(error.clone()),
+            };
+            info.path.clone()
+        };
+        let Some(ops) = self.ops(id.type_id) else {
+            tracing::error!("Тип ресурса не зарегистрирован (init_asset)");
+            return;
+        };
+        for child in labeled {
+            if let Some(child_ops) = self.ops(child.id.type_id) {
+                self.set_status(child.id, AssetStatus::Ready);
+                (child_ops.apply_loaded)(world, child.id, child.value);
+            }
+        }
+        let path = path.map_or_else(|| "<без пути>".to_owned(), |p| p.to_string());
+        match result {
+            Ok(value) => {
+                tracing::debug!("Ресурс загружен: {path}");
+                (ops.apply_loaded)(world, id, value);
+                self.fail_missing_labels(world, &path);
+            }
+            Err(error) => {
+                tracing::error!("Ресурс {path} ({}): {error}", ops.name);
+                assert!(
+                    !ASSETS_STRICT.get(),
+                    "assets.strict: не удалось загрузить {path}: {error}"
+                );
+                (ops.apply_failed)(world, id, error.clone());
+                self.fail_labels_of(world, &path, &error);
+            }
+        }
+    }
+
+    /// Вложенные ресурсы, запрошенные по метке, которой в файле не оказалось.
+    fn fail_missing_labels(&self, world: &mut World, file: &str) {
+        let missing: Vec<(UntypedAssetId, String)> = {
+            let state = self.lock();
+            state
+                .infos
+                .iter()
+                .filter(|(_, info)| matches!(info.status, AssetStatus::Loading))
+                .filter_map(|(id, info)| {
+                    let path = info.path.as_ref()?;
+                    (path.label().is_some() && path.file() == file).then(|| (*id, path.to_string()))
+                })
+                .collect()
+        };
+        for (id, path) in missing {
+            let error = AssetError::NotFound(path);
+            self.set_status(id, AssetStatus::Failed(error.clone()));
+            if let Some(ops) = self.ops(id.type_id) {
+                (ops.apply_failed)(world, id, error);
+            }
+        }
+    }
+
+    fn fail_labels_of(&self, world: &mut World, file: &str, error: &AssetError) {
+        let children: Vec<UntypedAssetId> = {
+            let state = self.lock();
+            state
+                .infos
+                .iter()
+                .filter(|(_, info)| {
+                    info.path
+                        .as_ref()
+                        .is_some_and(|p| p.label().is_some() && p.file() == file)
+                })
+                .map(|(id, _)| *id)
+                .collect()
+        };
+        for id in children {
+            self.set_status(id, AssetStatus::Failed(error.clone()));
+            if let Some(ops) = self.ops(id.type_id) {
+                (ops.apply_failed)(world, id, error.clone());
+            }
+        }
+    }
+
+    /// Запоминает размер загруженного значения. Вызывается, когда данные уже в `Assets<T>`.
+    pub(crate) fn note_memory(&self, id: UntypedAssetId, category: MemoryCategory, bytes: u64) {
+        let mut state = self.lock();
+        let tick = bump(&mut state.clock);
+        let Some(info) = state.infos.get_mut(&id) else {
+            return;
+        };
+        info.category = category;
+        info.bytes = bytes;
+        info.last_used = tick;
+    }
+
+    /// Снимает неиспользуемые ресурсы, пока группы не влезут в бюджет.
+    /// Ресурс с нулевым размером не кешируется: его данные и так ничего не стоят,
+    /// а хэндлы внутри (меши glTF) должны отпуститься сразу.
+    fn evict_over_budget(&self, world: &mut World) {
+        loop {
+            let victim = {
+                let mut state = self.lock();
+                let usage = usage_of(&state);
+                let budgets = budgets();
+                let victim = oldest_victim(&state, &usage, &budgets);
+                for (index, category) in [
+                    MemoryCategory::Image,
+                    MemoryCategory::Mesh,
+                    MemoryCategory::Other,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let over = usage.of(category) > budgets[index];
+                    // Бюджет 0 — это «не кешировать», а не лимит на то, что ещё держат хэндлы
+                    if budgets[index] > 0 && over && victim.is_none() && !state.budget_warned[index]
+                    {
+                        tracing::warn!(
+                            "Память {}: {} МБ при бюджете {} МБ, всё ещё используется",
+                            category_name(category),
+                            usage.of(category) / (1024 * 1024),
+                            budgets[index] / (1024 * 1024),
+                        );
+                        state.budget_warned[index] = true;
+                    }
+                    if !over {
+                        state.budget_warned[index] = false;
+                    }
+                }
+                victim
+            };
+            let Some(id) = victim else {
+                break;
+            };
+            self.try_unload(world, id);
+        }
+    }
+
+    /// Выгружает ресурс, если на него не осталось сильных хэндлов.
+    fn try_unload(&self, world: &mut World, id: UntypedAssetId) {
+        let removed = {
+            let mut state = self.lock();
+            let Some(info) = state.infos.get(&id) else {
+                return;
+            };
+            if info.owner.strong_count() > 0 {
+                return; // хэндл успели получить снова
+            }
+            let info = state.infos.remove(&id).expect("проверено выше");
+            if let Some(path) = &info.path {
+                state.by_path.remove(&(path.clone(), id.type_id));
+            }
+            if let Some(allocator) = state.allocators.get_mut(&id.type_id) {
+                allocator.free(id.index);
+            }
+            info
+        };
+        if let Some(ops) = self.ops(id.type_id) {
+            tracing::debug!(
+                "Ресурс выгружен: {}",
+                removed.path.map_or_else(String::new, |p| p.to_string())
+            );
+            // Выгрузка значения уничтожит хэндлы внутри него (меши glTF) — каскад
+            (ops.remove)(world, id);
+        }
+    }
+}
+
+/// Применяет готовые загрузки и выгружает ресурсы без владельцев. Начало кадра.
+// [Rust] Система с `&mut World` — «эксклюзивная»: монопольный доступ ко всему миру,
+// выполняется одна, без параллельных систем. Нужна, потому что пишем в ресурсы любых типов.
+pub(crate) fn apply_loads(world: &mut World) {
+    let _zone = tracing::trace_span!("apply_loads").entered();
+    let server = world.resource::<AssetServer>().clone();
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+    {
+        let changes: Vec<String> = server
+            .inner
+            .watchers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .flat_map(crate::watch::Watcher::changes)
+            .collect();
+        for file in changes {
+            server.reload(&file);
+        }
+    }
+    // Ограничение на кадр: применение результата может быть дорогим (вставка больших данных)
+    for _ in 0..256 {
+        let Ok(result) = server.inner.results.1.try_recv() else {
+            break;
+        };
+        server.apply_result(world, result);
+    }
+    // Исчезновение хэндла само по себе не выгружает: ресурс остаётся в кеше,
+    // пока группа не превысит бюджет. Нулевой размер выгружается всегда.
+    // Пока выгрузка рождает новые «последние хэндлы» (glTF отпускает меши) — повторяем.
+    loop {
+        let mut dropped = false;
+        while let Ok(id) = server.inner.drops.1.try_recv() {
+            dropped = true;
+            let mut state = server.lock();
+            let tick = bump(&mut state.clock);
+            if let Some(info) = state.infos.get_mut(&id) {
+                info.last_used = tick;
+            }
+        }
+        let before = server.lock().infos.len();
+        server.evict_over_budget(world);
+        let evicted = server.lock().infos.len() != before;
+        if !dropped && !evicted {
+            break;
+        }
+    }
+}
+
+fn bump(clock: &mut u64) -> u64 {
+    *clock += 1;
+    *clock
+}
+
+impl Info {
+    fn loading(path: Option<AssetPath>, owner: Weak<StrongRef>) -> Self {
+        Self {
+            path,
+            status: AssetStatus::Loading,
+            owner,
+            dependencies: Vec::new(),
+            bytes: 0,
+            category: MemoryCategory::Other,
+            last_used: 0,
+        }
+    }
+}
+
+fn usage_of(state: &State) -> MemoryUsage {
+    let mut usage = MemoryUsage::default();
+    for info in state.infos.values() {
+        usage.add(info.category, info.bytes);
+    }
+    usage
+}
+
+fn budgets() -> [u64; 3] {
+    const MB: u64 = 1024 * 1024;
+    [
+        ASSETS_BUDGET_IMAGE_MB.get().saturating_mul(MB),
+        ASSETS_BUDGET_MESH_MB.get().saturating_mul(MB),
+        ASSETS_BUDGET_OTHER_MB.get().saturating_mul(MB),
+    ]
+}
+
+fn category_index(category: MemoryCategory) -> usize {
+    match category {
+        MemoryCategory::Image => 0,
+        MemoryCategory::Mesh => 1,
+        MemoryCategory::Other => 2,
+    }
+}
+
+fn category_name(category: MemoryCategory) -> &'static str {
+    match category {
+        MemoryCategory::Image => "текстур",
+        MemoryCategory::Mesh => "мешей",
+        MemoryCategory::Other => "прочих ресурсов",
+    }
+}
+
+/// Неиспользуемый ресурс: нулевой размер не кешируем, ненулевой — только сверх бюджета.
+fn oldest_victim(state: &State, usage: &MemoryUsage, budgets: &[u64; 3]) -> Option<UntypedAssetId> {
+    let mut oldest: Option<(u64, UntypedAssetId)> = None;
+    for (id, info) in &state.infos {
+        if info.owner.strong_count() > 0 {
+            continue;
+        }
+        let over = usage.of(info.category) > budgets[category_index(info.category)];
+        if info.bytes != 0 && !over {
+            continue;
+        }
+        if oldest.is_none_or(|(tick, _)| info.last_used < tick) {
+            oldest = Some((info.last_used, *id));
+        }
+    }
+    oldest.map(|(_, id)| id)
+}
+
+fn typed<T: Asset>(id: UntypedAssetId) -> AssetId<T> {
+    debug_assert_eq!(id.type_id, TypeId::of::<T>());
+    AssetId::new(id.index, id.generation)
+}
+
+fn apply_loaded<T: Asset>(world: &mut World, id: UntypedAssetId, value: AnyAsset) {
+    // [Rust] downcast — проверка типа во время выполнения, аналог dynamic_cast
+    let Ok(value) = value.downcast::<T>() else {
+        tracing::error!("Загрузчик вернул не тот тип");
+        return;
+    };
+    let category = value.memory_category();
+    let bytes = value.memory_size();
+    let typed_id = typed::<T>(id);
+    world
+        .resource_mut::<Assets<T>>()
+        .set_loaded(typed_id, *value);
+    world
+        .resource::<AssetServer>()
+        .note_memory(id, category, bytes);
+    world.write_message(AssetEvent::Loaded(typed_id));
+}
+
+fn apply_failed<T: Asset>(world: &mut World, id: UntypedAssetId, error: AssetError) {
+    let id = typed::<T>(id);
+    world
+        .resource_mut::<Assets<T>>()
+        .set_failed(id, error.clone());
+    world.write_message(AssetEvent::Failed(id, error));
+}
+
+fn remove<T: Asset>(world: &mut World, id: UntypedAssetId) {
+    let id = typed::<T>(id);
+    let removed = world.resource_mut::<Assets<T>>().remove(id);
+    world.write_message(AssetEvent::Unloaded(id));
+    // Значение уничтожается здесь, уже без заимствования мира
+    drop(removed);
+}

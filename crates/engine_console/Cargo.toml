@@ -1,0 +1,17 @@
+[package]
+name = "engine_console"
+description = "Чит-консоль: команды и CVar, дополнение по Tab, история"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+engine_core = { workspace = true }
+engine_ecs = { workspace = true }
+engine_input = { workspace = true }
+engine_render = { workspace = true }
+tracing = { workspace = true }

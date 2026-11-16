@@ -1,0 +1,22 @@
+[package]
+name = "engine_physics_rapier"
+description = "Бэкенд физики на rapier3d"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+engine_core = { workspace = true }
+engine_ecs = { workspace = true }
+engine_math = { workspace = true }
+engine_physics = { workspace = true }
+rapier3d = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+engine_scene = { workspace = true }
+engine_platform = { workspace = true }

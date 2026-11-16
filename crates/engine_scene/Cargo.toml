@@ -1,0 +1,26 @@
+[package]
+name = "engine_scene"
+description = "Сцена в ECS: трансформы, иерархия, камера, свет, сцены glTF"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+engine_core = { workspace = true }
+engine_ecs = { workspace = true }
+engine_math = { workspace = true }
+engine_assets = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+engine_net = { workspace = true }
+
+# Бенчмарк: `cargo bench -p engine_scene`. harness = false — свой main у criterion вместо встроенного
+[[bench]]
+name = "transforms"
+harness = false

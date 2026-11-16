@@ -1,0 +1,141 @@
+# Корневой манифест workspace — аналог корневого CMakeLists.txt с add_subdirectory().
+# [Rust] Здесь нет собственного кода: только список крейтов и общие настройки.
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+# Общие поля пакетов. В крейтах подключаются как `version.workspace = true`.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+# Единые версии зависимостей для всего workspace.
+# Крейты пишут `winit = { workspace = true }` и не указывают версию сами.
+[workspace.dependencies]
+# Свои крейты
+engine = { path = "crates/engine" }
+engine_platform = { path = "crates/engine_platform" }
+engine_math = { path = "crates/engine_math" }
+engine_ecs = { path = "crates/engine_ecs" }
+engine_core = { path = "crates/engine_core" }
+engine_render = { path = "crates/engine_render" }
+engine_net = { path = "crates/engine_net" }
+engine_assets = { path = "crates/engine_assets" }
+engine_scene = { path = "crates/engine_scene" }
+engine_2d = { path = "crates/engine_2d" }
+engine_input = { path = "crates/engine_input" }
+engine_debug = { path = "crates/engine_debug" }
+engine_text = { path = "crates/engine_text" }
+engine_console = { path = "crates/engine_console" }
+engine_physics = { path = "crates/engine_physics" }
+engine_physics_rapier = { path = "crates/engine_physics_rapier" }
+engine_audio = { path = "crates/engine_audio" }
+engine_audio_kira = { path = "crates/engine_audio_kira" }
+engine_serialize = { path = "crates/engine_serialize" }
+
+# Сторонние (описание каждого — docs/crates.md)
+winit = "0.30.13"
+# 0.33 — её типы умеет отражать bevy_reflect 0.20 (рефлексия Vec3, Quat... для сцен)
+glam = "0.33.2"
+web-time = "1.1.0"
+raw-window-handle = "0.6.2"
+crossbeam-channel = "0.5.17"
+triple_buffer = "9.0.1"
+# Без dx12 (Windows не целевая платформа) и webgl (решение D3: на Web только WebGPU)
+wgpu = { version = "30.0.2", default-features = false, features = ["std", "parking_lot", "metal", "vulkan", "gles", "wgsl", "webgpu"] }
+# С рефлексией (решение D7: сцены, будущий редактор), без backtrace
+bevy_ecs = { version = "0.20.1", default-features = false, features = ["std", "async_executor", "bevy_reflect", "serialize"] }
+# Рефлексия: типы glam (поэтому glam 0.33 — версия, которую поддерживает bevy_reflect 0.20).
+# Без авторегистрации (`inventory` не работает на wasm без ухищрений) — типы регистрируют плагины
+bevy_reflect = { version = "0.20.1", default-features = false, features = ["std", "glam", "smallvec"] }
+# Формат сцен (RON) и сериализация
+ron = "0.12.3"
+serde = "1.0.229"
+log = "0.4.35"
+thiserror = "2.0.21"
+# Логи и профилирование (описание — docs/crates.md)
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-logcat = "0.1.0"
+tracing-oslog = "0.3.0"
+tracing-web = "0.1.4"
+# Tracy: только то, что нужно для зон и кадров; клиент активен, пока подключён Tracy GUI
+tracing-tracy = { version = "0.12.0", default-features = false, features = ["enable", "ondemand"] }
+tracy-client = { version = "0.19.0", default-features = false, features = ["enable", "ondemand"] }
+toml = "1.2.1"
+bytemuck = { version = "1", features = ["derive"] }
+# Отладочный UI. egui-wgpu без фич по умолчанию: они включают WebGL (решение D3 — без него)
+egui = { version = "0.37.0", default-features = false, features = ["default_fonts"] }
+egui-wgpu = { version = "0.37.0", default-features = false }
+# Текст: шейпинг, перенос строк, растеризация глифов. Без fontconfig (системная библиотека
+# Linux) — шрифты движок загружает сам, системные не нужны
+cosmic-text = { version = "0.19.0", default-features = false, features = ["std", "swash"] }
+# Шрифты egui (Ubuntu Light с кириллицей) — уже в бинарнике через egui, шрифт текста по умолчанию
+epaint_default_fonts = "0.37.0"
+# Физика (R2-09): чистый Rust, работает на wasm. Без `parallel` (rayon) — на Web потоков нет,
+# а наши тела считаются на фиксированном шаге главного потока
+rapier3d = { version = "0.36.1", default-features = false, features = ["dim3", "f32", "std"] }
+# Аудио (R2-08): микшер, плавные изменения, потоковое воспроизведение; вывод через cpal.
+# Без realtime-фич cpal (на Linux им нужен D-Bus). Форматы: wav (контейнер `wav` + кодек `pcm` —
+# без второго WAV не декодируется), ogg/vorbis, mp3
+kira = { version = "0.12.6", default-features = false, features = ["cpal", "wav", "pcm", "ogg", "vorbis", "mp3"] }
+# Асинхронные задачи: пулы потоков на native, spawn_local в браузере (часть bevy, как bevy_ecs)
+bevy_tasks = { version = "0.20.1", default-features = false, features = ["async_executor"] }
+async-channel = "2.5.0"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Сеть и форматы ресурсов
+ureq = "3.5.2"
+# SHA-256 для проверки целостности загрузок. Чистый Rust, работает на wasm
+sha2 = "0.10.9"
+# Слежение за файлами для горячей перезагрузки ресурсов (desktop)
+notify = "8.2.2"
+# Бенчмарки (T-02): без графиков и rayon — быстрее сборка
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+# Перекодировщик Basis Universal: один KTX2 → BC7 / ASTC / ETC2 / RGBA. Чистый Rust, без C++
+basisu = "0.1.0"
+gltf = { version = "1.4.1", default-features = false, features = ["utils", "names", "KHR_texture_transform", "KHR_materials_emissive_strength", "KHR_lights_punctual"] }
+wasm-bindgen-futures = "0.4.80"
+web-sys = "0.3.107"
+js-sys = "0.3"
+console_error_panic_hook = "0.1.7"
+# [Rust] Версия закреплена точно ("="): CLI `wasm-bindgen` должен совпадать с ней до патча,
+# иначе сборка под Web падает с ошибкой несовпадения схемы.
+wasm-bindgen = "=0.2.130"
+
+# Правила компилятора и clippy для всех крейтов (крейт включает их через `[lints] workspace = true`).
+[workspace.lints.rust]
+unsafe_code = "deny"            # unsafe только там, где явно разрешён и прокомментирован
+unused_must_use = "deny"        # нельзя молча игнорировать Result
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Отключаем шумные правила pedantic, которые не дают пользы
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Системы ECS обязаны принимать параметры (Res, Query) по значению — так их вызывает планировщик
+needless_pass_by_value = "allow"
+
+# Зависимости собираем с оптимизациями даже в debug: иначе рендер и физика
+# в отладочной сборке работают в десятки раз медленнее. Свой код остаётся -O0.
+[profile.dev.package."*"]
+opt-level = 2
+
+# Свои крейты с тяжёлыми циклами по данным (декодирование, мип-уровни) — тоже с оптимизацией.
+# Без неё загрузка текстур в debug в десятки раз медленнее. Пошаговая отладка внутри
+# этого крейта станет менее точной — при необходимости временно уберите строку.
+[profile.dev.package.engine_assets]
+opt-level = 2
+# Построение SDF глифов — тоже цикл по пикселям
+[profile.dev.package.engine_text]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

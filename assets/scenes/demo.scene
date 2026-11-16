@@ -1,0 +1,1425 @@
+(
+    entities: [
+        (
+            id: 0,
+            components: {
+                "engine_scene::components::Transform": (
+                    translation: (0.0, 0.0, 0.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+                "engine_scene::gltf_scene::SceneRoot": (Some("models/khronos/DamagedHelmet/DamagedHelmet.glb")),
+                "sandbox::scenes::FitTo": (
+                    height: 1.6,
+                    position: (0.0, 0.0, 0.0),
+                ),
+            },
+        ),
+        (
+            id: 1,
+            components: {
+                "engine_scene::components::Transform": (
+                    translation: (0.0, 0.0, 0.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+                "engine_scene::gltf_scene::SceneRoot": (Some("models/orc/orc.glb")),
+                "sandbox::scenes::FitTo": (
+                    height: 2.0,
+                    position: (-2.2, 0.0, 0.0),
+                ),
+            },
+        ),
+        (
+            id: 2,
+            components: {
+                "engine_scene::components::Transform": (
+                    translation: (0.0, 0.0, 0.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+                "engine_scene::gltf_scene::SceneRoot": (Some("models/khronos/Fox/Fox.glb")),
+                "sandbox::scenes::FitTo": (
+                    height: 1.0,
+                    position: (2.2, 0.0, 0.0),
+                ),
+            },
+        ),
+        (
+            id: 3,
+            components: {
+                "engine_scene::components::Transform": (
+                    translation: (0.0, 0.0, 0.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+                "engine_scene::gltf_scene::SceneRoot": (Some("https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/8f492390ddc7a2ae221a1369ef560589cf8c70fb/Models/Duck/glTF-Binary/Duck.glb")),
+                "sandbox::scenes::FitTo": (
+                    height: 0.8,
+                    position: (1.2, 0.0, 1.6),
+                ),
+            },
+        ),
+        (
+            id: 4,
+            components: {
+                "engine_scene::components::Transform": (
+                    translation: (0.0, 0.0, 0.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+                "engine_scene::gltf_scene::SceneRoot": (Some("models/khronos/BoxTextured/BoxTextured.glb")),
+                "sandbox::scenes::FitTo": (
+                    height: 0.6,
+                    position: (-1.2, 0.0, 1.6),
+                ),
+            },
+        ),
+        (
+            id: 5,
+            components: {
+                "engine_scene::components::Transform": (
+                    translation: (0.0, 2.3, -1.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+                "engine_text::text::Text": (
+                    content: "Istok — текст в мире",
+                    font: Some(Some("fonts/NotoSans-Regular.ttf")),
+                    size: 0.35,
+                    color: (1.0, 0.85, 0.4, 1.0),
+                    outline: None,
+                    align: Center,
+                    anchor: (0.5, 0.5),
+                    max_width: None,
+                    line_height: 1.2,
+                    mode: World,
+                ),
+                "sandbox::scenes::Sign": (),
+            },
+        ),
+        (
+            id: 6,
+            components: {
+                "engine_scene::components::Transform": (
+                    translation: (0.0, 1.8, 0.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+                "engine_text::text::Text": (
+                    content: "Шлем",
+                    font: None,
+                    size: 16.0,
+                    color: (1.0, 1.0, 1.0, 1.0),
+                    outline: Some((
+                        width: 0.1,
+                        color: (0.0, 0.0, 0.0, 1.0),
+                    )),
+                    align: Center,
+                    anchor: (0.5, 1.0),
+                    max_width: None,
+                    line_height: 1.2,
+                    mode: Label(
+                        offset: (0.0, 0.0),
+                    ),
+                ),
+            },
+        ),
+        (
+            id: 7,
+            components: {
+                "engine_scene::components::Transform": (
+                    translation: (-2.2, 2.2, 0.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+                "engine_text::text::Text": (
+                    content: "Орк",
+                    font: None,
+                    size: 16.0,
+                    color: (1.0, 1.0, 1.0, 1.0),
+                    outline: Some((
+                        width: 0.1,
+                        color: (0.0, 0.0, 0.0, 1.0),
+                    )),
+                    align: Center,
+                    anchor: (0.5, 1.0),
+                    max_width: None,
+                    line_height: 1.2,
+                    mode: Label(
+                        offset: (0.0, 0.0),
+                    ),
+                ),
+            },
+        ),
+        (
+            id: 8,
+            components: {
+                "engine_scene::components::Transform": (
+                    translation: (2.2, 1.2, 0.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+                "engine_text::text::Text": (
+                    content: "Лиса",
+                    font: None,
+                    size: 16.0,
+                    color: (1.0, 1.0, 1.0, 1.0),
+                    outline: Some((
+                        width: 0.1,
+                        color: (0.0, 0.0, 0.0, 1.0),
+                    )),
+                    align: Center,
+                    anchor: (0.5, 1.0),
+                    max_width: None,
+                    line_height: 1.2,
+                    mode: Label(
+                        offset: (0.0, 0.0),
+                    ),
+                ),
+            },
+        ),
+        (
+            id: 9,
+            components: {
+                "engine_scene::components::Transform": (
+                    translation: (1.2, 1.0, 1.6),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+                "engine_text::text::Text": (
+                    content: "Утка (из сети)",
+                    font: None,
+                    size: 16.0,
+                    color: (1.0, 1.0, 1.0, 1.0),
+                    outline: Some((
+                        width: 0.1,
+                        color: (0.0, 0.0, 0.0, 1.0),
+                    )),
+                    align: Center,
+                    anchor: (0.5, 1.0),
+                    max_width: None,
+                    line_height: 1.2,
+                    mode: Label(
+                        offset: (0.0, 0.0),
+                    ),
+                ),
+            },
+        ),
+        (
+            id: 10,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: TriMesh(
+                        vertices: [
+                            (-15.0, 0.0, -15.0),
+                            (15.0, 0.0, -15.0),
+                            (15.0, 0.0, 15.0),
+                            (-15.0, 0.0, 15.0),
+                        ],
+                        indices: [
+                            (0, 2, 1),
+                            (0, 3, 2),
+                        ],
+                    ),
+                    friction: 0.5,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Fixed,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/floor"),
+                    materials: [
+                        Some(Some("sandbox://materials/floor")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.0, 0.0, 0.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 11,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-0.6, 0.2, -3.1999998),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 12,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-0.6, 0.2, -2.8),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 13,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-0.6, 0.2, -2.3999999),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 14,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-0.6, 0.2, -1.9999999),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 15,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-0.20000002, 0.2, -3.1999998),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 16,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-0.20000002, 0.2, -2.8),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 17,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-0.20000002, 0.2, -2.3999999),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 18,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-0.20000002, 0.2, -1.9999999),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 19,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.19999999, 0.2, -3.1999998),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 20,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.19999999, 0.2, -2.8),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 21,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.19999999, 0.2, -2.3999999),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 22,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.19999999, 0.2, -1.9999999),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 23,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.6, 0.2, -3.1999998),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 24,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.6, 0.2, -2.8),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 25,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.6, 0.2, -2.3999999),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 26,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.6, 0.2, -1.9999999),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 27,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-0.4, 0.6, -3.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 28,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-0.4, 0.6, -2.6),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 29,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-0.4, 0.6, -2.1999998),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 30,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.0, 0.6, -3.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 31,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.0, 0.6, -2.6),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 32,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.0, 0.6, -2.1999998),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 33,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.4, 0.6, -3.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 34,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.4, 0.6, -2.6),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 35,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.4, 0.6, -2.1999998),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 36,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-0.2, 1.0, -2.8),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 37,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-0.2, 1.0, -2.3999999),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 38,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.2, 1.0, -2.8),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 39,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.2, 1.0, -2.3999999),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 40,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Cuboid(
+                        half_extents: (0.2, 0.2, 0.2),
+                    ),
+                    friction: 0.7,
+                    restitution: 0.0,
+                    density: 1.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/cube"),
+                    materials: [
+                        Some(Some("sandbox://materials/crate")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.0, 1.4000001, -2.6),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 41,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Ball(
+                        radius: 0.18,
+                    ),
+                    friction: 0.5,
+                    restitution: 0.6,
+                    density: 4.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::Damping": (
+                    linear: 0.3,
+                    angular: 1.0,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/ball"),
+                    materials: [
+                        Some(Some("sandbox://materials/ball_red")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.3, 3.0, -2.6),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+                "sandbox::physics::Ball": (),
+            },
+        ),
+        (
+            id: 42,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Ball(
+                        radius: 0.18,
+                    ),
+                    friction: 0.5,
+                    restitution: 0.6,
+                    density: 4.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::Damping": (
+                    linear: 0.3,
+                    angular: 1.0,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/ball"),
+                    materials: [
+                        Some(Some("sandbox://materials/ball_blue")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-0.22121815, 3.41, -2.397361),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+                "sandbox::physics::Ball": (),
+            },
+        ),
+        (
+            id: 43,
+            components: {
+                "engine_physics::components::Collider": (
+                    shape: Ball(
+                        radius: 0.18,
+                    ),
+                    friction: 0.5,
+                    restitution: 0.6,
+                    density: 4.0,
+                    sensor: false,
+                ),
+                "engine_physics::components::Damping": (
+                    linear: 0.3,
+                    angular: 1.0,
+                ),
+                "engine_physics::components::RigidBody": Dynamic,
+                "engine_physics::components::Velocity": (
+                    linear: (0.0, 0.0, 0.0),
+                    angular: (0.0, 0.0, 0.0),
+                ),
+                "engine_scene::components::Mesh3d": (
+                    mesh: Some("sandbox://meshes/ball"),
+                    materials: [
+                        Some(Some("sandbox://materials/ball_green")),
+                    ],
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.026249753, 3.8200002, -2.8988492),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+                "sandbox::physics::Ball": (),
+            },
+        ),
+        (
+            id: 44,
+            components: {
+                "engine_audio::components::AudioPlayer": (
+                    clip: Some("audio/ambient_loop.wav"),
+                    volume: 0.5,
+                    speed: 1.0,
+                    looped: true,
+                    paused: false,
+                    bus: Music,
+                    spatial: None,
+                    stream: true,
+                    despawn_on_finish: false,
+                ),
+            },
+        ),
+        (
+            id: 45,
+            components: {
+                "engine_scene::components::Camera": (
+                    fov_y: 0.87266463,
+                    near: 0.05,
+                    far: 2000.0,
+                    order: 0,
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (2.1595466, 2.5081258, 5.9161043),
+                    rotation: (-0.12277052, 0.17274968, 0.021706885, 0.9770434),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+                "sandbox::camera::OrbitCamera": (
+                    target: (0.0, 0.9, 0.0),
+                    distance: 6.5,
+                    yaw: 0.35,
+                    pitch: -0.25,
+                ),
+            },
+        ),
+        (
+            id: 46,
+            components: {
+                "engine_scene::components::DirectionalLight": (
+                    color: (1.0, 0.98, 0.95),
+                    intensity: 3.0,
+                    shadows: true,
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (4.0, 8.0, 5.0),
+                    rotation: (-0.40866795, 0.29835472, 0.14335297, 0.8505439),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 47,
+            components: {
+                "engine_scene::components::PointLight": (
+                    color: (1.0, 0.6, 0.3),
+                    intensity: 30.0,
+                    range: 12.0,
+                    shadows: true,
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (-3.0, 2.5, 2.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 48,
+            components: {
+                "engine_scene::components::PointLight": (
+                    color: (0.3, 0.6, 1.0),
+                    intensity: 30.0,
+                    range: 12.0,
+                    shadows: false,
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (3.0, 2.0, 3.0),
+                    rotation: (0.0, 0.0, 0.0, 1.0),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 49,
+            components: {
+                "engine_scene::components::SpotLight": (
+                    color: (1.0, 0.95, 0.8),
+                    intensity: 60.0,
+                    range: 15.0,
+                    inner_angle: 0.3,
+                    outer_angle: 0.45,
+                    shadows: true,
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (0.5, 5.0, 2.5),
+                    rotation: (-0.50106674, 0.085135035, 0.049615387, 0.85978043),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+        (
+            id: 50,
+            components: {
+                "engine_scene::components::SpotLight": (
+                    color: (0.4, 1.0, 0.5),
+                    intensity: 40.0,
+                    range: 12.0,
+                    inner_angle: 0.15,
+                    outer_angle: 0.3,
+                    shadows: true,
+                ),
+                "engine_scene::components::Transform": (
+                    translation: (3.5, 4.0, 1.5),
+                    rotation: (-0.49377638, 0.29703137, 0.18419504, 0.79625964),
+                    scale: (1.0, 1.0, 1.0),
+                ),
+                "engine_scene::components::Visibility": (true),
+            },
+        ),
+    ],
+)

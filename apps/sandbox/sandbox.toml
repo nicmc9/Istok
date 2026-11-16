@@ -1,0 +1,28 @@
+# Конфигурация sandbox. Имя переменной = путь в таблицах: [sim] hz → sim.hz.
+# Переопределить при запуске: cargo run -p sandbox -- --cvar sim.hz=30
+# На Web: http://localhost:8000/?sim.hz=30
+
+[sim]
+hz = 60          # частота шага логики
+max_steps = 5    # максимум шагов логики за кадр
+
+[log]
+# filter = "info,engine_render=debug"
+
+[assets]
+# Шейдеры движка из исходников — правка на лету (только desktop, при запуске из корня репозитория)
+# engine_dir = "crates/engine_render/src"
+# 0 — неиспользуемый ресурс выгружается сразу. Иначе остаётся, пока группа не превысит бюджет.
+budget_image_mb = 512
+budget_mesh_mb = 256
+budget_other_mb = 64
+
+[render]
+# mode = "inline"   # threaded (по умолчанию на native) или inline
+
+# В engine эти подсистемы выключены. Витрина их включает.
+[physics]
+enabled = true
+
+[audio]
+enabled = true

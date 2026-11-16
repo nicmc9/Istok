@@ -1,0 +1,400 @@
+use std::collections::HashSet;
+
+use engine_ecs::prelude::*;
+use engine_ecs::{Schedule, ScheduleSystem, Schedules};
+use engine_platform::{Instant, LaunchContext, PlatformConfig, PlatformError};
+
+use crate::window::MainWindow;
+use crate::{
+    AnyCVar, AppLifecycle, CHEATS, CVarSource, CVars, FixedTime, LOG_FILTER, LifecycleHook, Plugin,
+    SIM_HZ, SIM_MAX_STEPS, Stage, Time, Window, WindowResized,
+};
+
+/// Приложение движка: мир ECS, расписания стадий и подключённые плагины.
+///
+/// ```ignore
+/// let mut app = App::new();
+/// app.add_plugin(MyPlugin)
+///    .add_systems(Stage::FixedUpdate, move_objects);
+/// app.run(PlatformConfig::default(), LaunchContext::default())?;
+/// ```
+// [Rust] Методы настройки принимают и возвращают `&mut Self`, поэтому вызовы
+// можно выстраивать цепочкой, как в C++ builder с `return *this;`.
+pub struct App {
+    world: World,
+    // [Rust] `Box<dyn Plugin>` — владеющий указатель на объект любого типа с трейтом Plugin.
+    // Аналог `std::unique_ptr<IPlugin>` с виртуальными вызовами.
+    plugins: Vec<Box<dyn Plugin>>,
+    plugin_names: HashSet<&'static str>,
+    lifecycle_hooks: Vec<LifecycleHookFn>,
+    started: bool,
+}
+
+// [Rust] `dyn FnMut(...)` — любая функция или замыкание с такой сигнатурой, которое может
+// менять захваченные переменные. Аналог `std::function<void(World&, const LifecycleHook&)>`.
+type LifecycleHookFn = Box<dyn FnMut(&mut World, &LifecycleHook<'_>)>;
+
+impl App {
+    pub fn new() -> Self {
+        // Логи нужны уже при сборке плагинов, до запуска цикла платформы
+        engine_platform::init_logging();
+        engine_platform::profiling::set_thread_name("main");
+        crate::tasks::init_pools();
+        let mut world = World::new();
+        for stage in Stage::ALL {
+            world.add_schedule(Schedule::new(stage));
+        }
+        world.insert_resource(Time::new(Instant::now()));
+        world.init_resource::<FixedTime>();
+        world.init_resource::<Window>();
+        world.init_resource::<crate::AppControl>();
+        // Реестр типов для рефлексии: его пополняют плагины через `register_type`
+        world.init_resource::<engine_ecs::reflect::AppTypeRegistry>();
+
+        let mut app = Self {
+            world,
+            plugins: Vec::new(),
+            plugin_names: HashSet::new(),
+            lifecycle_hooks: Vec::new(),
+            started: false,
+        };
+        app.add_systems(
+            Stage::First,
+            (
+                engine_ecs::message_update_system,
+                crate::settings::apply_core_settings,
+            ),
+        );
+
+        // Аргументы запуска читаем сразу: у них приоритет выше, чем у файла конфигурации,
+        // который проект загрузит позже через load_config_toml
+        let mut cvars = CVars::default();
+        for (name, value) in engine_platform::launch_arguments() {
+            if let Err(error) = cvars.set(&name, &value, CVarSource::LaunchArguments) {
+                tracing::error!("Аргумент запуска: {error}");
+            }
+        }
+        // Пользовательский engine.toml на устройстве (Android, iOS)
+        if let Some(path) = engine_platform::paths::config_dir().map(|d| d.join("engine.toml"))
+            && let Ok(text) = std::fs::read_to_string(&path)
+        {
+            tracing::info!("Конфигурация: {}", path.display());
+            if let Err(error) = cvars.load_toml(&text, CVarSource::UserFile) {
+                tracing::error!("{}: {error}", path.display());
+            }
+        }
+        app.insert_resource(cvars);
+        app.register_cvar(&CHEATS)
+            .register_cvar(&SIM_HZ)
+            .register_cvar(&SIM_MAX_STEPS)
+            .register_cvar(&LOG_FILTER);
+        app.add_message::<WindowResized>()
+            .add_message::<crate::PlatformInput>()
+            .add_message::<AppLifecycle>();
+        app
+    }
+
+    /// Подключает плагин: сразу вызывает его `build`. Повторное добавление — ошибка в коде.
+    // [Rust] `impl Plugin` в аргументе — принимается любой тип с трейтом Plugin
+    // (аналог шаблонного параметра `template<class P> requires Plugin<P>`).
+    pub fn add_plugin(&mut self, plugin: impl Plugin) -> &mut Self {
+        let name = plugin.name();
+        assert!(self.plugin_names.insert(name), "плагин {name} уже добавлен");
+        tracing::debug!("Плагин: {name}");
+        plugin.build(self);
+        self.plugins.push(Box::new(plugin));
+        self
+    }
+
+    /// Проверка зависимостей: плагин может потребовать, чтобы другой был добавлен раньше.
+    pub fn is_plugin_added<P: Plugin>(&self) -> bool {
+        self.plugin_names.contains(std::any::type_name::<P>())
+    }
+
+    /// Добавляет системы в стадию.
+    ///
+    /// ```ignore
+    /// app.add_systems(Stage::Update, (read_input, move_camera.after(read_input)));
+    /// ```
+    pub fn add_systems<M>(
+        &mut self,
+        stage: Stage,
+        systems: impl IntoScheduleConfigs<ScheduleSystem, M>,
+    ) -> &mut Self {
+        self.world
+            .resource_mut::<Schedules>()
+            .add_systems(stage, systems);
+        self
+    }
+
+    /// Регистрирует тип для рефлексии: после этого его видят сцены (сохранение и загрузка)
+    /// и будущий редактор. Тип — `#[derive(Reflect)]`; у компонента — `#[reflect(Component)]`.
+    ///
+    /// [Rust] Регистрация явная, как у CVar: кода до `main` нет, тип не зарегистрируется сам.
+    pub fn register_type<T: engine_ecs::reflect::GetTypeRegistration>(&mut self) -> &mut Self {
+        self.world
+            .resource::<engine_ecs::reflect::AppTypeRegistry>()
+            .write()
+            .register::<T>();
+        self
+    }
+
+    /// Регистрирует переменную конфигурации (см. [`crate::CVar`]).
+    pub fn register_cvar(&mut self, cvar: &'static dyn AnyCVar) -> &mut Self {
+        self.world.resource_mut::<CVars>().register(cvar);
+        self
+    }
+
+    /// Загружает переменные из текста TOML. Вызывайте до добавления плагинов, чтобы
+    /// значения «только при запуске» успели примениться.
+    ///
+    /// ```ignore
+    /// app.load_config_toml(include_str!("../config.toml"));
+    /// ```
+    pub fn load_config_toml(&mut self, text: &str) -> &mut Self {
+        if let Err(error) = self
+            .world
+            .resource_mut::<CVars>()
+            .load_toml(text, CVarSource::File)
+        {
+            tracing::error!("Ошибка в конфигурации: {error}");
+        }
+        self
+    }
+
+    /// Регистрирует тип сообщения для `MessageWriter`/`MessageReader`.
+    pub fn add_message<M: Message>(&mut self) -> &mut Self {
+        engine_ecs::register_message::<M>(&mut self.world);
+        self
+    }
+
+    /// Регистрирует синхронный обработчик событий платформы (см. [`LifecycleHook`]).
+    /// Хуки вызываются в порядке регистрации.
+    pub fn add_lifecycle_hook(
+        &mut self,
+        hook: impl FnMut(&mut World, &LifecycleHook<'_>) + 'static,
+    ) -> &mut Self {
+        self.lifecycle_hooks.push(Box::new(hook));
+        self
+    }
+
+    pub(crate) fn run_lifecycle_hooks(&mut self, event: &LifecycleHook<'_>) {
+        // [Rust] Поля `lifecycle_hooks` и `world` заимствуются одновременно: одно для чтения
+        // хуков, другое на изменение. Это разрешено, потому что поля разные.
+        for hook in &mut self.lifecycle_hooks {
+            hook(&mut self.world, event);
+        }
+    }
+
+    pub fn insert_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
+        self.world.insert_resource(resource);
+        self
+    }
+
+    pub fn init_resource<R: Resource + Default>(&mut self) -> &mut Self {
+        self.world.init_resource::<R>();
+        self
+    }
+
+    pub fn world(&self) -> &World {
+        &self.world
+    }
+
+    pub fn world_mut(&mut self) -> &mut World {
+        &mut self.world
+    }
+
+    /// Выполняет один кадр. Обычно вызывается циклом платформы, вручную — в тестах.
+    pub fn update(&mut self) {
+        self.update_at(Instant::now());
+    }
+
+    /// Кадр с заданным временем — для детерминированных тестов.
+    pub fn update_at(&mut self, now: Instant) {
+        if !self.started {
+            self.startup();
+        }
+        // [Rust] `_frame` держит зону профайлера открытой до конца функции:
+        // при выходе из области видимости guard уничтожается и зона закрывается (RAII).
+        let _frame = tracing::trace_span!("frame").entered();
+
+        crate::tasks::tick_main_thread();
+        self.world.resource_mut::<Time>().update(now);
+        let delta = self.world.resource::<Time>().delta();
+        let steps = self.world.resource_mut::<FixedTime>().accumulate(delta);
+
+        for stage in Stage::PER_FRAME_BEFORE_FIXED {
+            self.run_stage(stage);
+        }
+        for _ in 0..steps {
+            // Сначала сдвигаем время, чтобы системы шага видели время этого шага
+            self.world.resource_mut::<FixedTime>().consume_step();
+            self.run_stage(Stage::FixedUpdate);
+        }
+        for stage in Stage::PER_FRAME_AFTER_FIXED {
+            self.run_stage(stage);
+        }
+        // Сброс флагов Added/Changed для следующего кадра
+        self.world.clear_trackers();
+        let cpu_time = now.elapsed();
+        self.world.resource_mut::<Time>().set_cpu_time(cpu_time);
+    }
+
+    fn run_stage(&mut self, stage: Stage) {
+        let _zone = tracing::trace_span!("stage", ?stage).entered();
+        self.world.run_schedule(stage);
+    }
+
+    /// Когда нужен следующий кадр: к моменту очередного шага логики.
+    /// `now` — время, с которым выполнялся последний кадр.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // на Web кадры идут от экрана
+    pub(crate) fn next_update_time(&self, now: Instant) -> Instant {
+        now + self.world.resource::<FixedTime>().until_next_step()
+    }
+
+    /// Запускает цикл событий платформы. На iOS не возвращает управление, на Web
+    /// возвращает сразу (цикл продолжается в браузере).
+    pub fn run(
+        &mut self,
+        config: PlatformConfig,
+        launch: LaunchContext,
+    ) -> Result<(), PlatformError> {
+        // [Rust] `mem::replace` забирает App из `self`, оставляя на его месте заготовку.
+        // Нужно, потому что цикл событий должен владеть App целиком.
+        // На месте self остаётся пустая заготовка (без плагинов и повторного чтения конфигурации)
+        let app = std::mem::replace(self, Self::placeholder());
+        engine_platform::run(config, launch, crate::runner::AppRunner::new(app))
+    }
+
+    fn placeholder() -> Self {
+        Self {
+            world: World::new(),
+            plugins: Vec::new(),
+            plugin_names: HashSet::new(),
+            lifecycle_hooks: Vec::new(),
+            started: false,
+        }
+    }
+
+    pub(crate) fn set_main_window(&mut self, window: MainWindow) {
+        self.world.insert_resource(window);
+    }
+
+    fn startup(&mut self) {
+        self.started = true;
+        let plugins = std::mem::take(&mut self.plugins);
+        for plugin in &plugins {
+            plugin.finish(self);
+        }
+        self.plugins = plugins;
+        self.world.resource_mut::<CVars>().mark_started();
+        self.world.run_schedule(Stage::Startup);
+    }
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// Ручная реализация: World печатать целиком бессмысленно
+impl std::fmt::Debug for App {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("App")
+            .field("plugins", &self.plugin_names)
+            .field("lifecycle_hooks", &self.lifecycle_hooks.len())
+            .field("started", &self.started)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine_platform::Duration;
+
+    #[derive(Resource, Default)]
+    struct Log(Vec<&'static str>);
+
+    fn first(mut log: ResMut<Log>) {
+        log.0.push("first");
+    }
+    fn fixed(mut log: ResMut<Log>) {
+        log.0.push("fixed");
+    }
+    fn update(mut log: ResMut<Log>) {
+        log.0.push("update");
+    }
+
+    #[test]
+    fn stages_run_in_order_with_fixed_steps() {
+        let mut app = App::new();
+        app.init_resource::<Log>()
+            .add_systems(Stage::PreUpdate, first)
+            .add_systems(Stage::FixedUpdate, fixed)
+            .add_systems(Stage::Update, update);
+
+        let start = Instant::now();
+        app.update_at(start); // первый кадр: delta = 0, шагов нет
+        let step = app.world().resource::<FixedTime>().step();
+        app.update_at(start + step * 2); // ровно два шага
+
+        assert_eq!(
+            app.world().resource::<Log>().0,
+            ["first", "update", "first", "fixed", "fixed", "update"]
+        );
+    }
+
+    struct TestPlugin;
+    impl Plugin for TestPlugin {
+        fn build(&self, app: &mut App) {
+            app.init_resource::<Log>();
+        }
+        fn finish(&self, app: &mut App) {
+            app.world_mut().resource_mut::<Log>().0.push("finish");
+        }
+    }
+
+    #[test]
+    fn plugin_build_and_finish() {
+        let mut app = App::new();
+        app.add_plugin(TestPlugin);
+        assert!(app.is_plugin_added::<TestPlugin>());
+        app.update_at(Instant::now());
+        assert_eq!(app.world().resource::<Log>().0, ["finish"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "уже добавлен")]
+    fn duplicate_plugin_panics() {
+        App::new().add_plugin(TestPlugin).add_plugin(TestPlugin);
+    }
+
+    #[derive(Message)]
+    struct Ping;
+
+    #[derive(Resource, Default)]
+    struct Received(usize);
+
+    fn send(mut writer: MessageWriter<Ping>) {
+        writer.write(Ping);
+    }
+    fn receive(mut reader: MessageReader<Ping>, mut received: ResMut<Received>) {
+        received.0 += reader.read().count();
+    }
+
+    #[test]
+    fn messages_are_delivered_once() {
+        let mut app = App::new();
+        app.add_message::<Ping>()
+            .init_resource::<Received>()
+            .add_systems(Stage::Update, (send, receive.after(send)));
+        let start = Instant::now();
+        for frame in 0..3 {
+            app.update_at(start + Duration::from_millis(frame));
+        }
+        // Три кадра — три сообщения, каждое прочитано ровно один раз
+        assert_eq!(app.world().resource::<Received>().0, 3);
+    }
+}
