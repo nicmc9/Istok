@@ -16,8 +16,12 @@ use crate::camera::OrbitCamera;
 pub static SCENE: CVar<CVarString> = CVar::new(
     "sandbox.scene",
     Cow::Borrowed("showcase"),
-    "Сцена: showcase, sponza, helmet, sprites, fx или файл scenes/<имя>.scene",
+    "Сцена: showcase, orcs, sponza, helmet, sprites, fx или файл scenes/<имя>.scene",
 );
+
+/// Доля клипа `0..1`, с которой стартует анимация. Без неё все копии начинают с нуля.
+#[derive(Component)]
+pub(crate) struct AnimationPhase(f32);
 
 /// Вписать модель: высота и точка, куда поставить основание. Сохраняется в сцене: модель
 /// из файла подгонится так же, даже если сохранили до подгонки.
@@ -79,6 +83,14 @@ pub fn setup(
             (Vec3::new(0.0, 1.0, 0.0), 4.0)
         }
         "fx" => (Vec3::new(0.0, 0.4, 0.0), 3.5),
+        "orcs" => {
+            spawn_orc_crowd(&mut commands, &server);
+            // Один направленный источник: рассеянный свет гасим, иначе это второй свет.
+            ambient.intensity = 0.0;
+            // Поле шире дальности теней по умолчанию (40 м) — иначе дальние ряды без тени.
+            engine::render::RENDER_SHADOW_DISTANCE.set(250.0);
+            (Vec3::new(0.0, 1.0, 0.0), 120.0)
+        }
         _ => {
             model(
                 "models/khronos/DamagedHelmet/DamagedHelmet.glb",
@@ -103,7 +115,19 @@ pub fn setup(
     };
 
     // Пол — чтобы было видно тени (в Sponza свой)
-    if scene.as_ref() != "sponza" {
+    if scene.as_ref() == "orcs" {
+        // Прямоугольник 40×25 с шагом 3 м: около 117×72 м.
+        let floor = Mesh::plane(160.0);
+        commands.spawn((
+            RigidBody::Fixed,
+            Collider::trimesh(&floor),
+            Mesh3d {
+                mesh: meshes.add(floor),
+                materials: vec![Some(demo.floor_material.clone())],
+            },
+            Transform::default(),
+        ));
+    } else if scene.as_ref() != "sponza" {
         commands.spawn((
             // Неподвижное тело из треугольников того же меша, что рисуется
             RigidBody::Fixed,
@@ -116,7 +140,7 @@ pub fn setup(
         ));
     }
 
-    if !matches!(scene.as_ref(), "sponza" | "helmet") {
+    if !matches!(scene.as_ref(), "sponza" | "helmet" | "orcs") {
         let at = if scene.as_ref() == "fx" {
             Vec3::ZERO
         } else {
@@ -124,13 +148,13 @@ pub fn setup(
         };
         spawn_effects(&mut commands, &mut images, at);
     }
-    if !matches!(scene.as_ref(), "sponza" | "helmet" | "fx") {
+    if !matches!(scene.as_ref(), "sponza" | "helmet" | "fx" | "orcs") {
         crate::physics::spawn_pyramid(&mut commands, &mut demo);
     }
     commands.insert_resource(demo);
     // Фоновая музыка: по кругу, шина Music (громкость — `audio.music_volume`). На Web
     // заиграет после первого клика или касания. Без audio.enabled плеер не запускается.
-    if engine::audio::AUDIO_ENABLED.get() {
+    if engine::audio::AUDIO_ENABLED.get() && scene.as_ref() != "orcs" {
         commands.spawn(AudioPlayer::music(server.load("audio/ambient_loop.wav")).with_volume(0.5));
     }
 
@@ -141,12 +165,59 @@ pub fn setup(
             // В `fx` камера смотрит круче вниз, иначе пятно на полу схлопывается в полоску.
             if scene.as_ref() == "fx" {
                 orbit.pitch = -0.55;
+            } else if scene.as_ref() == "orcs" {
+                // Сверху и вдоль рядов, чтобы прямоугольник сетки был в кадре целиком.
+                orbit.yaw = 0.0;
+                orbit.pitch = -1.0;
             }
             orbit
         },
         Transform::default(),
     ));
-    spawn_lights(&mut commands, &mut clips);
+    if scene.as_ref() == "orcs" {
+        commands.spawn((
+            DirectionalLight::default(),
+            Transform::from_xyz(4.0, 8.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+        ));
+    } else {
+        spawn_lights(&mut commands, &mut clips);
+    }
+}
+
+/// Тысяча копий одного орка. Файл грузится один раз, каждый экземпляр — своё дерево узлов.
+fn spawn_orc_crowd(commands: &mut Commands, server: &AssetServer) {
+    const COUNT: usize = 1000;
+    const COLUMNS: usize = 40;
+    // Шире силуэта орка (~0.8 м при росте 2 м), иначе ряды сливаются.
+    const SPACING: f32 = 3.0;
+    const HEIGHT: f32 = 2.0;
+
+    let rows = COUNT.div_ceil(COLUMNS);
+    let width = f32::from(u16::try_from(COLUMNS - 1).unwrap_or(0)) * SPACING;
+    let depth = f32::from(u16::try_from(rows - 1).unwrap_or(0)) * SPACING;
+    let origin = Vec3::new(-width * 0.5, 0.0, -depth * 0.5);
+    let orc = server.load("models/orc/orc.glb");
+    for index in 0..COUNT {
+        let column = index % COLUMNS;
+        let row = index / COLUMNS;
+        let position = origin
+            + Vec3::new(
+                f32::from(u16::try_from(column).unwrap_or(0)) * SPACING,
+                0.0,
+                f32::from(u16::try_from(row).unwrap_or(0)) * SPACING,
+            );
+        let step = f32::from(u16::try_from(index).unwrap_or(0));
+        commands.spawn((
+            SceneRoot(orc.clone()),
+            FitTo {
+                height: HEIGHT,
+                position,
+            },
+            // Соседи по сетке идут подряд, шаг 0.618 разводит их по циклу.
+            AnimationPhase((step * 0.618_034).fract()),
+            Transform::default(),
+        ));
+    }
 }
 
 /// Фонтан и пятно на полу. `at` — куда поставить: в `fx` в начало координат,
@@ -490,7 +561,7 @@ pub fn fit_models(
         let base = Vec3::new(bounds.center().x, bounds.min.y, bounds.center().z);
         transform.scale = Vec3::splat(scale);
         transform.translation = fit.position - base * scale;
-        engine::log::info!(
+        engine::log::debug!(
             "Модель вписана: размер {:.2?} → масштаб {scale:.4}",
             size.to_array()
         );
@@ -505,15 +576,22 @@ type WithoutPlayer = (With<SceneNodes>, Without<AnimationPlayer>);
 /// Как только сцена с анимациями развернулась — запускаем первый клип.
 pub fn autoplay(
     mut commands: Commands,
-    roots: Query<(Entity, &SceneRoot), WithoutPlayer>,
+    roots: Query<(Entity, &SceneRoot, Option<&AnimationPhase>), WithoutPlayer>,
     gltfs: Res<Assets<Gltf>>,
+    clips: Res<Assets<AnimationClip>>,
 ) {
-    for (entity, root) in &roots {
+    for (entity, root, phase) in &roots {
         let Some(clip) = gltfs.get_loaded(&root.0).and_then(|g| g.animations.first()) else {
             continue;
         };
         let mut player = AnimationPlayer::default();
         player.play(clip.clone());
+        if let Some(phase) = phase
+            && let Some(asset) = clips.get_loaded(clip)
+            && asset.duration > 0.0
+        {
+            player.seek(phase.0 * asset.duration);
+        }
         commands.entity(entity).insert(player);
     }
 }
@@ -523,12 +601,12 @@ pub fn next_clip(
     input: Res<Input>,
     gltfs: Res<Assets<Gltf>>,
     clips: Res<Assets<AnimationClip>>,
-    mut players: Query<(&SceneRoot, &mut AnimationPlayer)>,
+    mut players: Query<(&SceneRoot, &mut AnimationPlayer, Option<&AnimationPhase>)>,
 ) {
     if !input.key_pressed(Key::N) {
         return;
     }
-    for (root, mut player) in &mut players {
+    for (root, mut player, phase) in &mut players {
         let Some(gltf) = gltfs.get_loaded(&root.0) else {
             continue;
         };
@@ -540,6 +618,12 @@ pub fn next_clip(
         if let Some(clip) = clips.get_loaded(&next) {
             engine::log::info!("Анимация: {}", clip.name);
         }
-        player.crossfade(next, 0.4);
+        player.crossfade(next.clone(), 0.4);
+        if let Some(phase) = phase
+            && let Some(clip) = clips.get_loaded(&next)
+            && clip.duration > 0.0
+        {
+            player.seek(phase.0 * clip.duration);
+        }
     }
 }

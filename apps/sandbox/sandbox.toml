@@ -25,4 +25,4 @@ budget_other_mb = 64
 enabled = true
 
 [audio]
-enabled = true
+enabled = false

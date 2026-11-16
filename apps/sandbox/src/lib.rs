@@ -1,6 +1,6 @@
 //! Тестовое приложение: 3D-сцена из моделей glTF, орбитальная камера, статистика.
 //!
-//! Сцена выбирается CVar `sandbox.scene`: `showcase` (по умолчанию), `sponza`, `helmet`, `sprites`.
+//! Сцена выбирается CVar `sandbox.scene`: `showcase` (по умолчанию), `orcs`, `sponza`, `helmet`, `sprites`.
 //! Скриншот: `--cvar render.screenshot=shot.png --cvar render.screenshot_exit=true`.
 
 mod camera;

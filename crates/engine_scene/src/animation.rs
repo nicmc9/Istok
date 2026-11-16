@@ -59,6 +59,13 @@ impl AnimationPlayer {
         self
     }
 
+    /// Поставить текущий клип на `time` секунд от начала. Дальше время идёт как обычно.
+    pub fn seek(&mut self, time: f32) {
+        if let Some(current) = self.current.as_mut() {
+            current.time = time.max(0.0);
+        }
+    }
+
     /// Плавно перейти на клип за `duration` секунд.
     pub fn crossfade(&mut self, clip: Handle<AnimationClip>, duration: f32) -> &mut Self {
         if self.current.as_ref().is_some_and(|c| c.clip == clip) {

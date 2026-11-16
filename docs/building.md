@@ -36,7 +36,8 @@ cargo run -p sandbox -- --cvar sim.hz=30 --cvar render.mode=inline --cvar log.fi
 
 Путь рендера: `--cvar render.tier=gles` рисует без compute (на Mac так проверяется запасной путь GLES3). По умолчанию `auto`.
 
-Сцена: `--cvar sandbox.scene=sponza` (`showcase`, `sponza`, `helmet`, `sprites`, `fx`).
+Сцена: `--cvar sandbox.scene=sponza` (`showcase`, `orcs`, `sponza`, `helmet`, `sprites`, `fx`).
+`orcs` — тысяча орков, пол и одно солнце с тенями.
 `sprites` — плоская сцена: ортографическая камера, атлас 2×2 и один спрайт, который перебирает кадры.
 `fx` — пол, фонтан частиц и одна декаль.
 Управление камерой:
