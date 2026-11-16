@@ -139,7 +139,7 @@ pub struct RenderStats {
     pub gpu_textures: u64,
     /// Байты мешей, текстур и карт теней.
     pub gpu_bytes: u64,
-    /// Полный путь или запасной GLES3. `Unknown`, пока GPU не создан.
+    /// Есть ли compute. `Unknown`, пока GPU не создан.
     pub gpu_tier: crate::caps::GpuTier,
 }
 
@@ -176,6 +176,14 @@ pub fn request_screenshot(world: &mut World) -> ScreenshotReceiver {
     rx
 }
 
+/// GL-контекст только GLES 3.2. Переменная окружения не может опустить его до 3.0.
+fn with_gles32(mut desc: wgpu::InstanceDescriptor) -> wgpu::InstanceDescriptor {
+    desc.backends = backends();
+    let mut desc = desc.with_env();
+    desc.backend_options.gl.gles_minor_version = wgpu::Gles3MinorVersion::Version2;
+    desc
+}
+
 fn backends() -> wgpu::Backends {
     match RENDER_BACKEND.get().as_ref() {
         "vulkan" => wgpu::Backends::VULKAN,
@@ -189,7 +197,7 @@ fn backends() -> wgpu::Backends {
             let mut backends =
                 wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::BROWSER_WEBGPU;
             if cfg!(target_os = "android") {
-                backends |= wgpu::Backends::GL; // GLES3 для старых устройств (решение D3)
+                backends |= wgpu::Backends::GL; // GLES 3.2 (решение D3)
             }
             backends
         }
@@ -200,7 +208,6 @@ fn backends() -> wgpu::Backends {
 fn register_cvars(app: &mut App) {
     app.register_cvar(&RENDER_MODE)
         .register_cvar(&RENDER_BACKEND)
-        .register_cvar(&crate::caps::RENDER_TIER)
         .register_cvar(&RENDER_HEADLESS)
         .register_cvar(&RENDER_HEADLESS_WIDTH)
         .register_cvar(&RENDER_HEADLESS_HEIGHT)
@@ -266,10 +273,9 @@ impl Plugin for RenderPlugin {
             backend,
         };
         if headless {
-            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends: backends(),
-                ..wgpu::InstanceDescriptor::new_without_display_handle()
-            });
+            let instance = wgpu::Instance::new(with_gles32(
+                wgpu::InstanceDescriptor::new_without_display_handle(),
+            ));
             frontend.send(RenderCommand::InitHeadless {
                 instance,
                 size: WindowSize {
@@ -370,10 +376,9 @@ impl RenderFrontend {
     /// можно только из него.
     fn create_surface(&mut self, window: &PlatformWindow) {
         let instance = self.instance.get_or_insert_with(|| {
-            wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends: backends(),
-                ..wgpu::InstanceDescriptor::new_with_display_handle(Box::new(window.clone()))
-            })
+            wgpu::Instance::new(with_gles32(
+                wgpu::InstanceDescriptor::new_with_display_handle(Box::new(window.clone())),
+            ))
         });
         // PlatformWindow владеет окном через Arc, поэтому surface может жить сколько угодно
         match instance.create_surface(window.clone()) {

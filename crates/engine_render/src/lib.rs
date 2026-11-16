@@ -34,7 +34,7 @@ mod sprites;
 mod text;
 mod ui;
 
-pub use caps::{GpuTier, RENDER_TIER};
+pub use caps::GpuTier;
 pub use color::Color;
 pub use command::Screenshot;
 pub use debug_draw::{DEBUG_AXES, DEBUG_BOUNDS, DEBUG_GRID, DebugDraw};

@@ -33,7 +33,7 @@ pub(crate) struct SharedStats {
     pub gpu_meshes: AtomicU64,
     pub gpu_textures: AtomicU64,
     pub gpu_bytes: AtomicU64,
-    /// 0 — GPU ещё нет, 1 — полный путь, 2 — запасной GLES3.
+    /// 0 — GPU ещё нет, 1 — compute есть, 2 — compute нет.
     pub gpu_tier: AtomicU8,
 }
 
@@ -70,7 +70,7 @@ pub(crate) struct Renderer {
     snapshots: Consumer<FrameSnapshot>,
     stats: Arc<SharedStats>,
     gpu: Option<Gpu>,
-    /// Путь рендера. До готовности GPU — запасной (compute выключен).
+    /// Возможности GPU. До готовности compute выключен.
     caps: GpuCaps,
     init: Option<GpuInit>,
     target: Option<Target>,
@@ -312,14 +312,9 @@ impl Renderer {
                     info.backend,
                     info.driver_info
                 );
-                let caps = GpuCaps::choose(
-                    crate::caps::Probe::from_adapter(&gpu.adapter),
-                    crate::caps::RENDER_TIER.get(),
-                );
+                let caps = GpuCaps::from_probe(crate::caps::Probe::from_adapter(&gpu.adapter));
                 tracing::info!("{}", caps.report());
-                self.stats
-                    .gpu_tier
-                    .store(caps.tier.code(), Ordering::Relaxed);
+                self.stats.gpu_tier.store(caps.tier_code(), Ordering::Relaxed);
                 self.caps = caps;
                 self.gpu = Some(gpu);
                 self.init = None;

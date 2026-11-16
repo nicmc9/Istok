@@ -1,6 +1,6 @@
 # Istok
 
-Игровой движок на Rust. Графика через wgpu: Vulkan, Metal, GLES3 и WebGPU.
+Игровой движок на Rust. Графика через wgpu: Vulkan, Metal, GLES 3.2 и WebGPU.
 Собирается на macOS, Linux, Android, iOS и в браузере.
 
 Подсистемы — отдельные крейты. Игра подключает нужные плагинами и feature-флагами.

@@ -25,7 +25,7 @@ struct Object {
 @group(2) @binding(0) var<uniform> object: Object;
 
 // Матрицы костей скелетного меша: мировая матрица кости × обратная матрица привязки.
-// Uniform, а не storage: на тире GLES3 storage-буферов в вершинном шейдере может не быть.
+// Uniform на 256 костей. Вершины скелетного меша уже в мире.
 struct Joints {
     matrices: array<mat4x4<f32>, 256>,
 };

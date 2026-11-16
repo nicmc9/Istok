@@ -34,7 +34,7 @@ cargo run -p sandbox -- --cvar sim.hz=30 --cvar render.mode=inline --cvar log.fi
 
 На Web — параметрами URL: `http://localhost:8000/?sim.hz=30&render.mode=inline`.
 
-Путь рендера: `--cvar render.tier=gles` рисует без compute (на Mac так проверяется запасной путь GLES3). По умолчанию `auto`.
+GL-контекст — GLES 3.2, compute-шейдеры включены. Отдельного пути без compute нет.
 
 Сцена: `--cvar sandbox.scene=sponza` (`showcase`, `orcs`, `sponza`, `helmet`, `sprites`, `fx`).
 `orcs` — тысяча орков, пол и одно солнце с тенями.
