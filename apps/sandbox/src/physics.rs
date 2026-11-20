@@ -60,7 +60,7 @@ pub fn create_assets(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<Material>,
     server: &AssetServer,
-) -> (PhysicsDemo, BounceSound) {
+) -> (PhysicsDemo, Option<BounceSound>) {
     let demo = PhysicsDemo {
         floor_mesh: meshes.add_named("sandbox://meshes/floor", Mesh::plane(FLOOR_SIZE)),
         floor_material: material(materials, "floor", [0.25, 0.25, 0.27], 0.85),
@@ -77,7 +77,11 @@ pub fn create_assets(
         ],
         dropped: 0,
     };
-    (demo, BounceSound(server.load("audio/bounce.wav")))
+    // Без audio.enabled тип AudioClip не зарегистрирован: загрузка дала бы ошибку в логе.
+    let bounce = engine::audio::AUDIO_ENABLED
+        .get()
+        .then(|| BounceSound(server.load("audio/bounce.wav")));
+    (demo, bounce)
 }
 
 /// Пирамида 4 × 4 → 1 из кубов и три мяча над ней.

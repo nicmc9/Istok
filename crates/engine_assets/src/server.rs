@@ -564,7 +564,8 @@ impl AssetServer {
             info.path.clone()
         };
         let Some(ops) = self.ops(id.type_id) else {
-            tracing::error!("Тип ресурса не зарегистрирован (init_asset)");
+            let path = path.map_or_else(|| "<без пути>".to_owned(), |p| p.to_string());
+            tracing::error!("Тип ресурса не зарегистрирован (init_asset): {path}");
             return;
         };
         for child in labeled {

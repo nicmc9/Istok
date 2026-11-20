@@ -48,7 +48,9 @@ pub fn setup(
     engine::log::info!("Сцена: {scene}");
     // Ресурсы, созданные кодом, — с именами: их находят и сохранённые сцены
     let (mut demo, bounce) = crate::physics::create_assets(&mut meshes, &mut materials, &server);
-    commands.insert_resource(bounce);
+    if let Some(bounce) = bounce {
+        commands.insert_resource(bounce);
+    }
     if scene.as_ref() == "sprites" {
         spawn_sprites(&mut commands, &mut images, &mut atlases, &mut sprite_clips);
         commands.insert_resource(demo);
@@ -114,32 +116,7 @@ pub fn setup(
         }
     };
 
-    // Пол — чтобы было видно тени (в Sponza свой)
-    if scene.as_ref() == "orcs" {
-        // Прямоугольник 40×25 с шагом 3 м: около 117×72 м.
-        let floor = Mesh::plane(160.0);
-        commands.spawn((
-            RigidBody::Fixed,
-            Collider::trimesh(&floor),
-            Mesh3d {
-                mesh: meshes.add(floor),
-                materials: vec![Some(demo.floor_material.clone())],
-            },
-            Transform::default(),
-        ));
-    } else if scene.as_ref() != "sponza" {
-        commands.spawn((
-            // Неподвижное тело из треугольников того же меша, что рисуется
-            RigidBody::Fixed,
-            Collider::trimesh(&Mesh::plane(crate::physics::FLOOR_SIZE)),
-            Mesh3d {
-                mesh: demo.floor_mesh.clone(),
-                materials: vec![Some(demo.floor_material.clone())],
-            },
-            Transform::default(),
-        ));
-    }
-
+    spawn_floor(&mut commands, &mut meshes, &demo, scene.as_ref());
     if !matches!(scene.as_ref(), "sponza" | "helmet" | "orcs") {
         let at = if scene.as_ref() == "fx" {
             Vec3::ZERO
@@ -158,14 +135,25 @@ pub fn setup(
         commands.spawn(AudioPlayer::music(server.load("audio/ambient_loop.wav")).with_volume(0.5));
     }
 
+    spawn_camera_and_light(&mut commands, &mut clips, scene.as_ref(), target, distance);
+}
+
+/// Орбитальная камера и свет сцены. У орков одно солнце, у остальных — набор ламп.
+fn spawn_camera_and_light(
+    commands: &mut Commands,
+    clips: &mut Assets<PropertyClip>,
+    scene: &str,
+    target: Vec3,
+    distance: f32,
+) {
     commands.spawn((
         Camera::default(),
         {
             let mut orbit = OrbitCamera::new(target, distance);
             // В `fx` камера смотрит круче вниз, иначе пятно на полу схлопывается в полоску.
-            if scene.as_ref() == "fx" {
+            if scene == "fx" {
                 orbit.pitch = -0.55;
-            } else if scene.as_ref() == "orcs" {
+            } else if scene == "orcs" {
                 // Сверху и вдоль рядов, чтобы прямоугольник сетки был в кадре целиком.
                 orbit.yaw = 0.0;
                 orbit.pitch = -1.0;
@@ -174,13 +162,46 @@ pub fn setup(
         },
         Transform::default(),
     ));
-    if scene.as_ref() == "orcs" {
+    if scene == "orcs" {
         commands.spawn((
             DirectionalLight::default(),
             Transform::from_xyz(4.0, 8.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
         ));
     } else {
-        spawn_lights(&mut commands, &mut clips);
+        spawn_lights(commands, clips);
+    }
+}
+
+/// Пол — чтобы было видно тени. В Sponza свой, у орков — шире.
+fn spawn_floor(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    demo: &crate::physics::PhysicsDemo,
+    scene: &str,
+) {
+    if scene == "orcs" {
+        // Прямоугольник 40×25 с шагом 3 м: около 117×72 м.
+        let floor = Mesh::plane(160.0);
+        commands.spawn((
+            RigidBody::Fixed,
+            Collider::trimesh(&floor),
+            Mesh3d {
+                mesh: meshes.add(floor),
+                materials: vec![Some(demo.floor_material.clone())],
+            },
+            Transform::default(),
+        ));
+    } else if scene != "sponza" {
+        commands.spawn((
+            // Неподвижное тело из треугольников того же меша, что рисуется
+            RigidBody::Fixed,
+            Collider::trimesh(&Mesh::plane(crate::physics::FLOOR_SIZE)),
+            Mesh3d {
+                mesh: demo.floor_mesh.clone(),
+                materials: vec![Some(demo.floor_material.clone())],
+            },
+            Transform::default(),
+        ));
     }
 }
 
