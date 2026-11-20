@@ -69,8 +69,9 @@ pub mod prelude {
     pub use engine_net::{NetPlugin, NetStats};
     pub use engine_render::{ClearColor, Color, DebugDraw, RenderPlugin, RenderStats, Ui};
     pub use engine_scene::{
-        AmbientLight, Camera, Decal, DirectionalLight, GlobalTransform, Mesh3d, ParticleEmitter,
-        PointLight, ScenePlugin, SceneRoot, SceneSpawned, SpotLight, Transform, Visibility,
+        AmbientLight, Camera, Decal, DirectionalLight, FitAxis, GlobalTransform, Mesh3d,
+        ParticleEmitter, PointLight, ScenePlugin, SceneRoot, SceneSpawned, SpotLight, Transform,
+        Visibility,
     };
     pub use engine_serialize::{LoadScene, SerializePlugin};
     pub use engine_text::{Font, Text, TextAlign, TextMode, TextPlugin};

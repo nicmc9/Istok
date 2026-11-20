@@ -376,7 +376,7 @@ fn spawn_sprites(
     atlases.add_named("sandbox://sprites.atlas", atlas);
     commands.spawn((
         Camera2d {
-            height: 10.0,
+            size: 10.0,
             ..Camera2d::default()
         },
         Transform::from_xyz(0.0, 0.0, 10.0),

@@ -97,23 +97,71 @@ pub struct Mesh3d {
     pub materials: Vec<Option<Handle<Material>>>,
 }
 
+/// По какой стороне экрана камера держит заданный обзор (угол у 3D-камеры, размер у 2D).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Reflect)]
+#[reflect(Default)]
+pub enum FitAxis {
+    /// По вертикали. В портрете по бокам видно мало: на телефоне 9:19.5 горизонтальный угол
+    /// вдвое меньше вертикального.
+    Vertical,
+    /// По горизонтали.
+    Horizontal,
+    /// По меньшей стороне: в ландшафте как `Vertical`, в портрете как `Horizontal`.
+    /// Что видно в квадрате посередине, видно при любой ориентации.
+    #[default]
+    Shorter,
+}
+
+impl FitAxis {
+    /// Обзор задан по ширине при соотношении сторон `aspect` (ширина / высота).
+    fn by_width(self, aspect: f32) -> bool {
+        match self {
+            Self::Vertical => false,
+            Self::Horizontal => true,
+            Self::Shorter => aspect < 1.0,
+        }
+    }
+
+    /// Вертикальный угол, при котором `fov` приходится на свою сторону.
+    pub fn fov_y(self, fov: f32, aspect: f32) -> f32 {
+        if self.by_width(aspect) {
+            2.0 * ((fov * 0.5).tan() / aspect.max(1e-4)).atan()
+        } else {
+            fov
+        }
+    }
+
+    /// Видимая высота, при которой `size` приходится на свою сторону.
+    pub fn height(self, size: f32, aspect: f32) -> f32 {
+        if self.by_width(aspect) {
+            size / aspect.max(1e-4)
+        } else {
+            size
+        }
+    }
+}
+
 /// Перспективная камера. Смотрит вдоль −Z своего `Transform`.
 #[derive(Component, Debug, Clone, Copy, Reflect)]
 #[reflect(Component, Default)]
 #[require(Transform)]
 pub struct Camera {
-    /// Вертикальный угол обзора, радианы.
-    pub fov_y: f32,
+    /// Угол обзора, радианы. По какой стороне — [`Self::fit`].
+    pub fov: f32,
+    /// По умолчанию по меньшей стороне: в портрете на телефоне сцена не уходит за края.
+    #[reflect(default)]
+    pub fit: FitAxis,
     pub near: f32,
     pub far: f32,
-    /// Камеры с бо́льшим номером рисуются поверх (R-06: несколько камер — позже).
+    /// Если камер несколько, рисует камера с меньшим номером (несколько вьюпортов — Б-09).
     pub order: i32,
 }
 
 impl Default for Camera {
     fn default() -> Self {
         Self {
-            fov_y: 50f32.to_radians(),
+            fov: 50f32.to_radians(),
+            fit: FitAxis::default(),
             near: 0.05,
             far: 2000.0,
             order: 0,
@@ -122,8 +170,13 @@ impl Default for Camera {
 }
 
 impl Camera {
+    /// Вертикальный угол при соотношении сторон `aspect` (ширина / высота).
+    pub fn fov_y(&self, aspect: f32) -> f32 {
+        self.fit.fov_y(self.fov, aspect)
+    }
+
     pub fn projection(&self, aspect: f32) -> Mat4 {
-        camera::perspective(self.fov_y, aspect.max(1e-4), self.near, self.far)
+        camera::perspective(self.fov_y(aspect), aspect.max(1e-4), self.near, self.far)
     }
 }
 
@@ -217,5 +270,40 @@ impl Default for AmbientLight {
             color: [0.6, 0.7, 1.0],
             intensity: 0.15,
         }
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::FitAxis;
+
+    #[test]
+    fn shorter_keeps_vertical_angle_in_landscape() {
+        let fov = 50f32.to_radians();
+        assert!((FitAxis::Shorter.fov_y(fov, 16.0 / 9.0) - fov).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shorter_keeps_horizontal_angle_in_portrait() {
+        let fov = 50f32.to_radians();
+        let aspect = 9.0 / 19.5;
+        let fov_y = FitAxis::Shorter.fov_y(fov, aspect);
+        // Горизонтальный угол обратно из вертикального — тот же, что задан
+        let fov_x = 2.0 * ((fov_y * 0.5).tan() * aspect).atan();
+        assert!((fov_x - fov).abs() < 1e-5);
+        assert!(fov_y > fov);
+    }
+
+    #[test]
+    fn vertical_ignores_aspect() {
+        let fov = 1.0;
+        assert!((FitAxis::Vertical.fov_y(fov, 0.4) - fov).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shorter_height_keeps_width_in_portrait() {
+        let height = FitAxis::Shorter.height(10.0, 0.5);
+        assert!((height * 0.5 - 10.0).abs() < 1e-4);
+        assert!((FitAxis::Shorter.height(10.0, 2.0) - 10.0).abs() < 1e-4);
     }
 }

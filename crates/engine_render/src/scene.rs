@@ -429,7 +429,8 @@ fn frame_camera(snapshot: &FrameSnapshot, aspect: f32, alpha: f32) -> CameraView
     let camera = snapshot.camera.as_ref();
     CameraView {
         world: camera_world(snapshot, alpha),
-        fov_y: camera.map_or(0.9, |c| c.fov_y),
+        // Тени строят каскады из этого же вида, поэтому сторона обзора учтена и там
+        fov_y: camera.map_or(0.9, |c| c.fit.fov_y(c.fov, aspect)),
         aspect,
         near: camera.map_or(0.05, |c| c.near),
         far: camera.map_or(1000.0, |c| c.far),

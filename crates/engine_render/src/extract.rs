@@ -203,7 +203,8 @@ pub(crate) fn extract_frame(
             CameraSnapshot {
                 prev,
                 curr,
-                fov_y: camera.fov_y,
+                fov: camera.fov,
+                fit: camera.fit,
                 near: camera.near,
                 far: camera.far,
             }

@@ -22,7 +22,8 @@ use crate::snapshot::interpolate;
 pub(crate) struct Camera2dSnapshot {
     pub prev: Mat4,
     pub curr: Mat4,
-    pub height: f32,
+    /// Размер и сторона обзора: видимая область считается по соотношению сторон цели.
+    pub view: Camera2d,
 }
 
 #[derive(Clone, Debug)]
@@ -91,7 +92,7 @@ pub(crate) fn extract_sprites(
     list.camera = Some(Camera2dSnapshot {
         prev,
         curr,
-        height: camera.height,
+        view: *camera,
     });
 
     for (entity, sprite, global) in &sprites {
@@ -421,9 +422,8 @@ fn push_quad(out: &mut Vec<SpriteVertex>, quad: &SpriteQuad, alpha: f32) {
 }
 
 fn view_proj(camera: &Camera2dSnapshot, aspect: f32, alpha: f32) -> Mat4 {
-    let height = camera.height.max(1e-4);
-    let half_h = height * 0.5;
-    let half_w = half_h * aspect.max(1e-4);
+    let (width, height) = camera.view.visible_size(aspect);
+    let (half_w, half_h) = (width * 0.5, height * 0.5);
     let world = interpolate(&camera.prev, &camera.curr, alpha);
     // Спрайт на той же глубине, что камера, не отсекается: слой решает порядок, не z
     camera::orthographic(-half_w, half_w, -half_h, half_h, -100.0, 100.0) * world.inverse()

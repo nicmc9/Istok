@@ -22,8 +22,8 @@ use engine_ecs::prelude::{ChildOf, IntoScheduleConfigs, Name};
 
 pub use animation::{AnimationPlayer, SceneNodes};
 pub use components::{
-    AmbientLight, Camera, DirectionalLight, GlobalTransform, Mesh3d, PointLight, SpotLight,
-    Transform, Visibility,
+    AmbientLight, Camera, DirectionalLight, FitAxis, GlobalTransform, Mesh3d, PointLight,
+    SpotLight, Transform, Visibility,
 };
 pub use fx::{Decal, Particle, ParticleCloud, ParticleEmitter};
 pub use gltf_scene::{SceneRoot, SceneSpawned, SkinnedMesh};
@@ -43,6 +43,7 @@ impl Plugin for ScenePlugin {
             .register_type::<Visibility>()
             .register_type::<Mesh3d>()
             .register_type::<Camera>()
+            .register_type::<FitAxis>()
             .register_type::<DirectionalLight>()
             .register_type::<PointLight>()
             .register_type::<SpotLight>()

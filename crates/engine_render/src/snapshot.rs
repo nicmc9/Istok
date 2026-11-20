@@ -51,7 +51,10 @@ pub(crate) struct SunSnapshot {
 pub(crate) struct CameraSnapshot {
     pub prev: Mat4,
     pub curr: Mat4,
-    pub fov_y: f32,
+    /// Угол обзора и сторона, по которой он держится: вертикальный угол зависит от
+    /// соотношения сторон цели, его знает только рендер.
+    pub fov: f32,
+    pub fit: engine_scene::FitAxis,
     pub near: f32,
     pub far: f32,
 }

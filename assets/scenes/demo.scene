@@ -1314,7 +1314,7 @@
             id: 45,
             components: {
                 "engine_scene::components::Camera": (
-                    fov_y: 0.87266463,
+                    fov: 0.87266463,
                     near: 0.05,
                     far: 2000.0,
                     order: 0,

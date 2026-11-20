@@ -11,7 +11,7 @@ use engine_assets::{Asset, AssetAppExt, Handle};
 use engine_core::{App, Plugin, Stage};
 use engine_ecs::prelude::*;
 use engine_math::Vec2;
-use engine_scene::{SpriteClip, SpritePlayer, Transform};
+use engine_scene::{FitAxis, SpriteClip, SpritePlayer, Transform};
 
 /// Прямоугольный спрайт в плоскости XY. `uv` — лево, верх, право, низ текстуры
 /// (`(0, 0)` — левый верхний угол, как у [`SpriteClip`]).
@@ -115,13 +115,16 @@ impl Asset for Atlas {
     }
 }
 
-/// Ортографическая камера. Высота — видимая область по Y, ширина следует за окном.
-/// Смотрит вдоль −Z своего [`Transform`].
+/// Ортографическая камера. `size` — видимая область в единицах мира по стороне `fit`,
+/// другая сторона следует за окном. Смотрит вдоль −Z своего [`Transform`].
 #[derive(Component, Debug, Clone, Copy, Reflect)]
 #[reflect(Component, Default)]
 #[require(Transform)]
 pub struct Camera2d {
-    pub height: f32,
+    pub size: f32,
+    /// По умолчанию по меньшей стороне: в портрете на телефоне края не обрезаются.
+    #[reflect(default)]
+    pub fit: FitAxis,
     /// Если камер несколько, берётся меньший номер. Разные вьюпорты — задача Б-09.
     pub order: i32,
 }
@@ -129,7 +132,8 @@ pub struct Camera2d {
 impl Default for Camera2d {
     fn default() -> Self {
         Self {
-            height: 10.0,
+            size: 10.0,
+            fit: FitAxis::default(),
             order: 0,
         }
     }
@@ -138,8 +142,9 @@ impl Default for Camera2d {
 impl Camera2d {
     /// Ширина и высота видимой области при соотношении сторон `aspect` (ширина / высота).
     pub fn visible_size(&self, aspect: f32) -> (f32, f32) {
-        let height = self.height.max(1e-4);
-        (height * aspect.max(1e-4), height)
+        let aspect = aspect.max(1e-4);
+        let height = self.fit.height(self.size.max(1e-4), aspect);
+        (height * aspect, height)
     }
 }
 
@@ -216,12 +221,16 @@ mod tests {
     #[test]
     fn visible_height_sets_width_from_aspect() {
         let camera = Camera2d {
-            height: 10.0,
+            size: 10.0,
             ..Camera2d::default()
         };
         let (width, height) = camera.visible_size(2.0);
         assert!((width - 20.0).abs() < 1e-4);
         assert!((height - 10.0).abs() < 1e-4);
+        // Портрет: те же 10 по ширине, высота растёт
+        let (width, height) = camera.visible_size(0.5);
+        assert!((width - 10.0).abs() < 1e-4);
+        assert!((height - 20.0).abs() < 1e-4);
     }
 
     #[test]
