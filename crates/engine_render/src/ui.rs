@@ -85,8 +85,18 @@ pub(crate) fn ui_begin(
     let pixels_per_point = window.scale_factor.max(0.5) as f32;
     #[allow(clippy::cast_precision_loss)]
     let size = egui::vec2(window.size.width as f32, window.size.height as f32) / pixels_per_point;
+    // Окна egui сами держатся внутри безопасной зоны (`ctx.content_rect()`)
+    #[allow(clippy::cast_precision_loss)]
+    let inset = |px: u32| px as f32 / pixels_per_point;
+    let safe = window.safe_area;
     let mut raw = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        safe_area_insets: Some(egui::SafeAreaInsets(egui::epaint::MarginF32 {
+            left: inset(safe.left),
+            right: inset(safe.right),
+            top: inset(safe.top),
+            bottom: inset(safe.bottom),
+        })),
         time: Some(time.elapsed().as_secs_f64()),
         ..Default::default()
     };

@@ -29,7 +29,7 @@ pub use handler::{NextUpdate, PlatformHandler};
 pub use input::{InputEvent, Key, MouseButton, TouchPhase};
 pub use launch::LaunchContext;
 pub use logging::{DEFAULT_LOG_FILTER, init_logging, set_log_filter};
-pub use window::{PlatformWindow, WindowSize};
+pub use window::{PlatformWindow, SafeArea, WindowSize};
 
 /// Время, работающее на всех платформах.
 /// [Rust] `std::time::Instant` в браузере паникует: в wasm32-unknown-unknown нет системных

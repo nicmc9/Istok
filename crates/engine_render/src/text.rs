@@ -84,6 +84,9 @@ pub(crate) fn extract_text(
     let _zone = tracing::trace_span!("extract_text").entered();
     #[allow(clippy::cast_possible_truncation)]
     let pixels_per_point = window.scale_factor as f32;
+    // `Screen` считает позицию от угла безопасной зоны: под вырезом и часами не видно
+    #[allow(clippy::cast_precision_loss)]
+    let safe_origin = Vec2::new(window.safe_area.left as f32, window.safe_area.top as f32);
     let frame = &mut frontend.snapshots.write().text;
     frame.world.clear();
     frame.overlay.clear();
@@ -146,7 +149,7 @@ pub(crate) fn extract_text(
             }
             TextMode::Screen { position } => {
                 push(&mut frame.overlay, &|p| {
-                    let px = (position + Vec2::new(p.x, -p.y)) * pixels_per_point;
+                    let px = safe_origin + (position + Vec2::new(p.x, -p.y)) * pixels_per_point;
                     ([px.x, px.y, 0.0, MODE_SCREEN], [0.0, 0.0])
                 });
             }

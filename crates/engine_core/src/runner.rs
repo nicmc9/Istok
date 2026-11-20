@@ -13,6 +13,8 @@ pub(crate) struct AppRunner {
     /// Когда выполнять следующий кадр. `None` — сразу. На Web не используется.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     next_frame: Option<Instant>,
+    /// Версия `window.safe_area`, о которой уже предупредили (см. `refresh_safe_area`).
+    safe_area_warned: u64,
 }
 
 impl AppRunner {
@@ -20,6 +22,7 @@ impl AppRunner {
         Self {
             app,
             next_frame: None,
+            safe_area_warned: 0,
         }
     }
 
@@ -72,6 +75,8 @@ impl PlatformHandler for AppRunner {
     /// потоке, и так он рисует с частотой экрана, а логика копит шаги как обычно.
     #[cfg(target_arch = "wasm32")]
     fn update(&mut self) -> NextUpdate {
+        // Главный поток, до систем кадра: см. refresh_safe_area
+        crate::window::refresh_safe_area(self.app.world_mut(), &mut self.safe_area_warned);
         self.app.update_at(Instant::now());
         engine_platform::profiling::frame_mark();
         if self.exit_requested() {
@@ -91,6 +96,8 @@ impl PlatformHandler for AppRunner {
         {
             return NextUpdate::At(next);
         }
+        // Главный поток, до систем кадра: см. refresh_safe_area
+        crate::window::refresh_safe_area(self.app.world_mut(), &mut self.safe_area_warned);
         self.app.update_at(now);
         engine_platform::profiling::frame_mark();
         if self.exit_requested() {

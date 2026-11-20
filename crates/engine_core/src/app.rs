@@ -88,7 +88,8 @@ impl App {
         app.register_cvar(&CHEATS)
             .register_cvar(&SIM_HZ)
             .register_cvar(&SIM_MAX_STEPS)
-            .register_cvar(&LOG_FILTER);
+            .register_cvar(&LOG_FILTER)
+            .register_cvar(&crate::window::WINDOW_SAFE_AREA);
         app.add_message::<WindowResized>()
             .add_message::<crate::PlatformInput>()
             .add_message::<AppLifecycle>();

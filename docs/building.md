@@ -35,6 +35,8 @@ cargo run -p sandbox -- --cvar sim.hz=30 --cvar render.mode=inline --cvar log.fi
 На Web — параметрами URL: `http://localhost:8000/?sim.hz=30&render.mode=inline`.
 
 GL-контекст — GLES 3.2, compute-шейдеры включены. Отдельного пути без compute нет.
+Безопасную зону телефона можно изобразить на desktop: `--cvar 'window.safe_area=0 59 0 34'`
+(слева, сверху, справа, снизу в точках; так у iPhone 15 в портрете).
 Меши и текстуры заливаются на GPU не больше `render.upload_budget_mb` мегабайт за кадр (8).
 `0` снимает ограничение. Один примитив или одна текстура больше бюджета уходит целиком.
 
@@ -60,13 +62,14 @@ F2 — границы мешей, F3 — оси. Запуск сразу с ин
 
 F5 (или кнопка в окне «Статистика»). `help` — список команд, `find текст` — поиск переменных,
 `имя значение` — изменить переменную, Tab — дополнение, стрелки вверх/вниз — история.
-Чит-команды (в sandbox — `sun`) работают после `cheats true`. Физика: `drop 20` — бросить мячи (удары слышны в 3D),
-`physics.debug true` — показать коллайдеры, `physics.paused true` — остановить. В sandbox физика и звук
-включены в `sandbox.toml` (`physics.enabled`, `audio.enabled`). У крейта `engine` их нет в зависимостях
-по умолчанию: проект пишет `features = ["physics", "audio"]` и ставит те же CVar в `true`.
+Чит-команды (в sandbox — `sun`) работают после `cheats true`. Физика: `drop 20` — бросить мячи (со звуком удары слышны в 3D),
+`physics.debug true` — показать коллайдеры, `physics.paused true` — остановить. В sandbox физика
+включена в `sandbox.toml` (`physics.enabled`), звук выключен: `--cvar audio.enabled=true` включает его.
+У крейта `engine` их нет в зависимостях по умолчанию: проект пишет `features = ["physics", "audio"]`
+и ставит те же CVar в `true`.
 Аллокатор: `features = ["mimalloc"]` ставит mimalloc вместо системного (native). На Web фича
 ничего не меняет.
-Выключить в витрине: `--cvar physics.enabled=false --cvar audio.enabled=false`. Команды при запуске:
+Выключить физику в витрине: `--cvar physics.enabled=false`. Команды при запуске:
 
 ```sh
 cargo run -p sandbox -- --cvar 'console.exec=cheats true; sun 0.5; sign "Привет"'
