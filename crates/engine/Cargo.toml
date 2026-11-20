@@ -41,3 +41,5 @@ audio = ["dep:engine_audio", "dep:engine_audio_kira"]
 physics = ["dep:engine_physics", "dep:engine_physics_rapier"]
 # Профилирование через Tracy (native) — см. engine_platform::profiling
 profiling = ["engine_platform/profiling", "engine_ecs/trace"]
+# mimalloc вместо системного аллокатора (native). На Web не действует.
+mimalloc = ["engine_core/mimalloc"]

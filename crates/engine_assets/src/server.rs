@@ -45,7 +45,7 @@ struct Inner {
 #[derive(Default)]
 struct State {
     /// Для каждого типа — свободные индексы и поколения.
-    allocators: HashMap<TypeId, Allocator>,
+    allocators: HashMap<TypeId, engine_core::Slots>,
     by_path: HashMap<(AssetPath, TypeId), UntypedAssetId>,
     infos: HashMap<UntypedAssetId, Info>,
     /// Растёт при каждом использовании: по нему выгружаем самый старый ресурс.
@@ -64,30 +64,6 @@ struct Info {
     category: MemoryCategory,
     /// Момент последнего использования. Меньше — кандидат на выгрузку раньше.
     last_used: u64,
-}
-
-#[derive(Default)]
-struct Allocator {
-    generations: Vec<u32>,
-    free: Vec<u32>,
-}
-
-impl Allocator {
-    fn allocate(&mut self) -> (u32, u32) {
-        if let Some(index) = self.free.pop() {
-            (index, self.generations[index as usize])
-        } else {
-            let index = u32::try_from(self.generations.len()).expect("слишком много ресурсов");
-            self.generations.push(0);
-            (index, 0)
-        }
-    }
-
-    fn free(&mut self, index: u32) {
-        // Новое поколение: старые id с этим индексом больше ничего не найдут
-        self.generations[index as usize] += 1;
-        self.free.push(index);
-    }
 }
 
 /// Операции над ресурсами конкретного типа, сохранённые как указатели на функции.
@@ -374,11 +350,11 @@ impl AssetServer {
             });
             return Handle::strong(typed(id), owner);
         }
-        let (index, generation) = state.allocators.entry(type_id).or_default().allocate();
+        let key = state.allocators.entry(type_id).or_default().allocate();
         let id = UntypedAssetId {
             type_id,
-            index,
-            generation,
+            index: key.index,
+            generation: key.generation,
         };
         let owner = Arc::new(self.strong_ref(id));
         if let Some(path) = &path {
@@ -456,11 +432,11 @@ impl AssetServer {
         let parent = if let Some(&id) = state.by_path.get(&(file.clone(), type_id)) {
             id
         } else {
-            let (index, generation) = state.allocators.entry(type_id).or_default().allocate();
+            let key = state.allocators.entry(type_id).or_default().allocate();
             let id = UntypedAssetId {
                 type_id,
-                index,
-                generation,
+                index: key.index,
+                generation: key.generation,
             };
             state.by_path.insert((file.clone(), type_id), id);
             let mut info = Info::loading(Some(file.clone()), Weak::new());
@@ -731,7 +707,17 @@ impl AssetServer {
                 state.by_path.remove(&(path.clone(), id.type_id));
             }
             if let Some(allocator) = state.allocators.get_mut(&id.type_id) {
-                allocator.free(id.index);
+                let key = engine_core::SlotKey {
+                    index: id.index,
+                    generation: id.generation,
+                };
+                if !allocator.free(key) {
+                    tracing::error!(
+                        "Слот ресурса уже свободен: индекс {}, поколение {}",
+                        id.index,
+                        id.generation
+                    );
+                }
             }
             info
         };

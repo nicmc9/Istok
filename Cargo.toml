@@ -43,6 +43,10 @@ web-time = "1.1.0"
 raw-window-handle = "0.6.2"
 crossbeam-channel = "0.5.17"
 triple_buffer = "9.0.1"
+# Кадровая арена: память на один кадр, сброс без отдачи кусков системе
+bumpalo = "3.20.3"
+# Опциональный глобальный аллокатор. Не в default: на Web не используется, на мобильных тянет C
+mimalloc = "0.1.52"
 # Без dx12 (Windows не целевая платформа) и webgl (решение D3: на Web только WebGPU)
 wgpu = { version = "30.0.2", default-features = false, features = ["std", "parking_lot", "metal", "vulkan", "gles", "wgsl", "webgpu"] }
 # С рефлексией (решение D7: сцены, будущий редактор), без backtrace

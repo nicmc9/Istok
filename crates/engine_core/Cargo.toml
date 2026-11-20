@@ -18,10 +18,17 @@ triple_buffer = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 bevy_tasks = { workspace = true }
+bumpalo = { workspace = true }
 
-# Пулы потоков задач — только там, где есть потоки
+# Пулы потоков задач — только там, где есть потоки.
+# mimalloc — опция глобального аллокатора; на Web его нет.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bevy_tasks = { workspace = true, features = ["multi_threaded"] }
+mimalloc = { workspace = true, optional = true }
+
+# На Web фича пустая: там свой аллокатор, крейт mimalloc не собирается.
+[features]
+mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
 criterion = { workspace = true }
@@ -29,4 +36,8 @@ criterion = { workspace = true }
 # Бенчмарк: `cargo bench -p engine_core`. harness = false — свой main у criterion вместо встроенного
 [[bench]]
 name = "sync_ecs"
+harness = false
+
+[[bench]]
+name = "memory"
 harness = false

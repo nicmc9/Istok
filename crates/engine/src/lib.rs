@@ -7,8 +7,8 @@ pub use engine_assets as assets;
 pub use engine_console as console;
 pub use engine_core::{
     AnyCVar, App, AppControl, AppLifecycle, CHEATS, CVar, CVarError, CVarFlags, CVarSource,
-    CVarString, CVarValue, CVars, FixedTime, LOG_FILTER, MainWindow, Plugin, SIM_HZ, SIM_MAX_STEPS,
-    Stage, Time, Window, WindowResized,
+    CVarString, CVarValue, CVars, FixedTime, FrameArena, LOG_FILTER, MainWindow, Plugin, SIM_HZ,
+    SIM_MAX_STEPS, SlotKey, Slots, Stage, Time, Window, WindowResized,
 };
 pub use engine_debug as debug;
 pub use engine_ecs as ecs;

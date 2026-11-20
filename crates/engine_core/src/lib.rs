@@ -1,5 +1,6 @@
 //! Ядро движка: [`App`], плагины, стадии кадра, время с фиксированным шагом.
 
+mod alloc;
 mod app;
 mod cvar;
 mod plugin;
@@ -9,6 +10,7 @@ mod stage;
 mod time;
 mod window;
 
+pub mod memory;
 pub mod sync;
 pub mod tasks;
 
@@ -18,6 +20,7 @@ pub use cvar::{
 };
 /// Длительность (работает и на Web).
 pub use engine_platform::{Duration, Instant};
+pub use memory::{FrameArena, SlotKey, Slots};
 pub use plugin::Plugin;
 pub use settings::{LOG_FILTER, SIM_HZ, SIM_MAX_STEPS};
 pub use stage::Stage;

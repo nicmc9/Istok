@@ -6,8 +6,8 @@ use engine_platform::{Instant, LaunchContext, PlatformConfig, PlatformError};
 
 use crate::window::MainWindow;
 use crate::{
-    AnyCVar, AppLifecycle, CHEATS, CVarSource, CVars, FixedTime, LOG_FILTER, LifecycleHook, Plugin,
-    SIM_HZ, SIM_MAX_STEPS, Stage, Time, Window, WindowResized,
+    AnyCVar, AppLifecycle, CHEATS, CVarSource, CVars, FixedTime, FrameArena, LOG_FILTER,
+    LifecycleHook, Plugin, SIM_HZ, SIM_MAX_STEPS, Stage, Time, Window, WindowResized,
 };
 
 /// Приложение движка: мир ECS, расписания стадий и подключённые плагины.
@@ -48,6 +48,7 @@ impl App {
         world.init_resource::<FixedTime>();
         world.init_resource::<Window>();
         world.init_resource::<crate::AppControl>();
+        world.insert_non_send(FrameArena::new());
         // Реестр типов для рефлексии: его пополняют плагины через `register_type`
         world.init_resource::<engine_ecs::reflect::AppTypeRegistry>();
 
@@ -217,6 +218,11 @@ impl App {
         // [Rust] `_frame` держит зону профайлера открытой до конца функции:
         // при выходе из области видимости guard уничтожается и зона закрывается (RAII).
         let _frame = tracing::trace_span!("frame").entered();
+        // Прошлый кадр кончился: временные значения систем больше не живы.
+        self.world
+            .get_non_send_mut::<FrameArena>()
+            .expect("кадровая арена")
+            .reset();
 
         crate::tasks::tick_main_thread();
         self.world.resource_mut::<Time>().update(now);
@@ -396,5 +402,29 @@ mod tests {
         }
         // Три кадра — три сообщения, каждое прочитано ровно один раз
         assert_eq!(app.world().resource::<Received>().0, 3);
+    }
+
+    fn scratch(arena: NonSend<FrameArena>) {
+        std::hint::black_box(arena.alloc(1u64));
+    }
+
+    #[test]
+    fn frame_keeps_the_arena_reserve() {
+        let mut app = App::new();
+        app.add_systems(Stage::Update, scratch);
+        app.update();
+        let reserved = app
+            .world()
+            .get_non_send::<FrameArena>()
+            .expect("кадровая арена")
+            .reserved_bytes();
+        assert!(reserved > 0);
+        app.update();
+        let again = app
+            .world()
+            .get_non_send::<FrameArena>()
+            .expect("кадровая арена")
+            .reserved_bytes();
+        assert_eq!(reserved, again);
     }
 }
