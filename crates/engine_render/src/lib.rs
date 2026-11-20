@@ -34,6 +34,7 @@ mod snapshot;
 mod sprites;
 mod text;
 mod ui;
+mod upload;
 
 pub use caps::GpuTier;
 pub use color::Color;
@@ -56,6 +57,7 @@ pub use shadows::{
 };
 pub use skin::{RENDER_SKIN_BUDGET_MB, RENDER_SKIN_COMPUTE};
 pub use ui::{DEBUG_UI, Ui};
+pub use upload::RENDER_UPLOAD_BUDGET_MB;
 
 /// Сохраняет снимок в PNG (только native — на Web файловой системы нет).
 pub fn save_png(shot: &Screenshot, path: &str) -> Result<(), String> {

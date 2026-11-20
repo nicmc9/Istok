@@ -34,10 +34,58 @@ pub(crate) fn upload_basis(
     image: &Image,
 ) -> crate::scene::GpuTexture {
     match prepare(device.features(), image) {
-        Ok(ready) => upload(device, queue, image, &ready),
+        Ok(ready) => upload_levels(device, image, &ready, |texture, mip, level| {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: mip,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &level.bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(level.row_bytes),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width: level.width,
+                    height: level.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }),
         Err(error) => {
             tracing::error!("KTX2 не залился, вместо него шахматка: {error}");
             crate::scene::upload_rgba(device, queue, &error_image())
+        }
+    }
+}
+
+pub(crate) fn upload_basis_staged(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    staging: &mut crate::upload::Staging,
+    image: &Image,
+) -> crate::scene::GpuTexture {
+    match prepare(device.features(), image) {
+        Ok(ready) => upload_levels(device, image, &ready, |texture, mip, level| {
+            staging.copy_texture(
+                encoder,
+                texture,
+                mip,
+                &level.bytes,
+                level.row_bytes,
+                wgpu::Extent3d {
+                    width: level.width,
+                    height: level.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }),
+        Err(error) => {
+            tracing::error!("KTX2 не залился, вместо него шахматка: {error}");
+            crate::scene::upload_rgba_staged(device, encoder, staging, &error_image())
         }
     }
 }
@@ -145,11 +193,11 @@ fn row_bytes(target: TargetFormat, width: u32) -> u32 {
     width.div_ceil(block_w.max(1)) * bytes
 }
 
-fn upload(
+fn upload_levels(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
     image: &Image,
     ready: &Ready,
+    mut write: impl FnMut(&wgpu::Texture, u32, &Level),
 ) -> crate::scene::GpuTexture {
     let base = ready.levels.first();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -167,26 +215,7 @@ fn upload(
         view_formats: &[],
     });
     for (index, level) in ready.levels.iter().enumerate() {
-        let mip = u32::try_from(index).unwrap_or(0);
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: mip,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &level.bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(level.row_bytes),
-                rows_per_image: None,
-            },
-            wgpu::Extent3d {
-                width: level.width,
-                height: level.height,
-                depth_or_array_layers: 1,
-            },
-        );
+        write(&texture, u32::try_from(index).unwrap_or(0), level);
     }
     crate::scene::GpuTexture {
         view: texture.create_view(&wgpu::TextureViewDescriptor::default()),

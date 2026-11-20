@@ -102,6 +102,18 @@ pub(crate) struct Renderer {
     ui_free: Vec<egui::TextureId>,
 }
 
+fn publish_gpu(stats: &SharedStats, scene: &SceneRenderer) {
+    let (meshes, textures, _) = scene.counts();
+    stats
+        .gpu_meshes
+        .store(u64::try_from(meshes).unwrap_or(u64::MAX), Ordering::Relaxed);
+    stats.gpu_textures.store(
+        u64::try_from(textures).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+    stats.gpu_bytes.store(scene.gpu_bytes(), Ordering::Relaxed);
+}
+
 impl Renderer {
     pub fn new(
         commands: Mailbox<RenderCommand>,
@@ -227,10 +239,8 @@ impl Renderer {
             return;
         };
         match command {
-            RenderCommand::UploadMesh(id, mesh) => scene.upload_mesh(&gpu.device, id, &mesh),
-            RenderCommand::UploadImage(id, image) => {
-                scene.upload_image(&gpu.device, &gpu.queue, id, &image);
-            }
+            RenderCommand::UploadMesh(id, mesh) => scene.upload_mesh(id, mesh),
+            RenderCommand::UploadImage(id, image) => scene.upload_image(id, image),
             RenderCommand::UploadMaterial(id, data) => scene.upload_material(&gpu.device, id, data),
             RenderCommand::RemoveMesh(id) => scene.remove_mesh(id),
             RenderCommand::RemoveImage(id) => scene.remove_image(id),
@@ -254,16 +264,7 @@ impl Renderer {
             }
             _ => {}
         }
-        let (meshes, textures, _) = scene.counts();
-        self.stats
-            .gpu_meshes
-            .store(meshes as u64, Ordering::Relaxed);
-        self.stats
-            .gpu_textures
-            .store(textures as u64, Ordering::Relaxed);
-        self.stats
-            .gpu_bytes
-            .store(scene.gpu_bytes(), Ordering::Relaxed);
+        publish_gpu(&self.stats, scene);
     }
 
     /// Новый исходник шейдера (горячая перезагрузка). Пайплайны пересобираются; при ошибке
@@ -586,6 +587,8 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame"),
             });
+        scene.flush_uploads(&gpu.device, &mut encoder);
+        publish_gpu(&self.stats, scene);
         if let Some(timer) = &mut self.timer {
             timer.collect(&gpu.device);
         }
@@ -611,30 +614,65 @@ impl Renderer {
             &mut self.pool,
         );
         let timer_slot = self.timer.as_ref().and_then(|t| t.resolve(&mut encoder));
-
-        // Скриншот: копия кадра в буфер, читаемый процессором
         let readback = (!self.screenshots.is_empty())
             .then(|| crate::screenshot::copy_to_buffer(&gpu.device, &mut encoder, texture));
-        {
-            let _zone = tracing::trace_span!("submit_present").entered();
-            gpu.queue
-                .submit(ui_commands.into_iter().chain([encoder.finish()]));
-            if let Some(readback) = readback {
-                let result = readback.read(&gpu.device);
-                for reply in self.screenshots.drain(..) {
-                    reply.send(result.clone());
-                }
-            }
-            if let Some(frame) = surface_frame {
-                gpu.queue.present(frame);
-            }
-            if let (Some(timer), Some(slot)) = (&self.timer, timer_slot) {
-                timer.after_submit(slot);
-            }
-        }
+        submit_present(
+            gpu,
+            scene,
+            &mut self.screenshots,
+            self.timer.as_ref(),
+            Present {
+                encoder,
+                ui_commands,
+                readback,
+                surface_frame,
+                timer_slot,
+            },
+        );
         self.finish_frame(work_started, draw);
         engine_platform::profiling::render_frame_mark();
         true
+    }
+}
+
+struct Present {
+    encoder: wgpu::CommandEncoder,
+    ui_commands: Vec<wgpu::CommandBuffer>,
+    readback: Option<crate::screenshot::Readback>,
+    surface_frame: Option<wgpu::SurfaceTexture>,
+    timer_slot: Option<usize>,
+}
+
+/// Отправка кадра. Пояс заливки закрывается здесь: копии уже записаны в энкодер.
+fn submit_present(
+    gpu: &Gpu,
+    scene: &mut SceneRenderer,
+    screenshots: &mut Vec<ReplySender<Result<Screenshot, String>>>,
+    timer: Option<&crate::gpu_timer::GpuTimer>,
+    present: Present,
+) {
+    let _zone = tracing::trace_span!("submit_present").entered();
+    let Present {
+        encoder,
+        ui_commands,
+        readback,
+        surface_frame,
+        timer_slot,
+    } = present;
+    scene.finish_uploads(&encoder);
+    gpu.queue
+        .submit(ui_commands.into_iter().chain([encoder.finish()]));
+    if let Some(readback) = readback {
+        let result = readback.read(&gpu.device);
+        for reply in screenshots.drain(..) {
+            reply.send(result.clone());
+        }
+    }
+    if let Some(frame) = surface_frame {
+        gpu.queue.present(frame);
+    }
+    if let (Some(timer), Some(slot)) = (timer, timer_slot) {
+        timer.after_submit(slot);
     }
 }
 

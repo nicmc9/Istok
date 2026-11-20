@@ -233,7 +233,8 @@ fn register_cvars(app: &mut App) {
         .register_cvar(&crate::shadows::RENDER_SHADOW_DEBUG)
         .register_cvar(&crate::lights::RENDER_LOCAL_SHADOW_SIZE)
         .register_cvar(&crate::skin::RENDER_SKIN_COMPUTE)
-        .register_cvar(&crate::skin::RENDER_SKIN_BUDGET_MB);
+        .register_cvar(&crate::skin::RENDER_SKIN_BUDGET_MB)
+        .register_cvar(&crate::upload::RENDER_UPLOAD_BUDGET_MB);
 }
 
 impl Plugin for RenderPlugin {

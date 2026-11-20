@@ -1,10 +1,10 @@
 //! GPU-ресурсы сцены и отрисовка PBR: меши, текстуры, материалы, пайплайны.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroU64;
 
 use bytemuck::{Pod, Zeroable};
-use engine_assets::formats::{AlphaMode, ColorSpace, Image, Material, Mesh};
+use engine_assets::formats::{AlphaMode, ColorSpace, Image, Material, Mesh, Primitive};
 use engine_assets::{Asset, AssetId};
 use engine_math::{Aabb, Frustum, Mat4, Vec3, camera};
 use wgpu::util::DeviceExt;
@@ -183,6 +183,21 @@ pub(crate) struct GpuTexture {
     pub(crate) bytes: u64,
 }
 
+enum PendingUpload {
+    Mesh(PendingMesh),
+    Image {
+        id: AssetId<Image>,
+        image: Box<Image>,
+    },
+}
+
+struct PendingMesh {
+    id: AssetId<Mesh>,
+    mesh: Box<Mesh>,
+    next: usize,
+    built: Vec<GpuPrimitive>,
+}
+
 struct GpuMaterial {
     data: MaterialData,
     uniform: wgpu::Buffer,
@@ -309,6 +324,9 @@ pub(crate) struct SceneRenderer {
     default_material: GpuMaterial,
     meshes: HashMap<AssetId<Mesh>, Vec<GpuPrimitive>>,
     textures: HashMap<AssetId<Image>, GpuTexture>,
+    /// Меши и текстуры, которые не влезли в бюджет этого кадра.
+    pending: VecDeque<PendingUpload>,
+    staging: crate::upload::Staging,
     materials: HashMap<AssetId<Material>, GpuMaterial>,
     manual_srgb: bool,
     /// Объекты кадра (см. [`DrawEntry`]).
@@ -528,6 +546,8 @@ impl SceneRenderer {
             default_material,
             meshes: HashMap::new(),
             textures: HashMap::new(),
+            pending: VecDeque::new(),
+            staging: crate::upload::Staging::new(device),
             materials: HashMap::new(),
             // В HDR кодирование делает проход тональной компрессии
             manual_srgb: !hdr && !color_format.is_srgb(),
@@ -585,77 +605,93 @@ impl SceneRenderer {
         Ok(())
     }
 
-    pub fn upload_mesh(&mut self, device: &wgpu::Device, id: AssetId<Mesh>, mesh: &Mesh) {
-        let _zone = tracing::trace_span!("upload_mesh").entered();
-        // Compute читает позу привязки как storage, вершинный шейдер — как вершины.
-        let compute_skin = self.skin.gpu.is_some();
-        let primitives = mesh
-            .primitives
-            .iter()
-            .map(|p| {
-                let vertices: Vec<Vertex> = (0..p.positions.len())
-                    .map(|i| Vertex {
-                        position: p.positions[i],
-                        normal: p.normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]),
-                        uv: p.uvs.get(i).copied().unwrap_or_default(),
-                    })
-                    .collect();
-                let skinned = !p.joints.is_empty() && p.joints.len() == p.positions.len();
-                let vertex_usage = if compute_skin && skinned {
-                    wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE
-                } else {
-                    wgpu::BufferUsages::VERTEX
-                };
-                GpuPrimitive {
-                    vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("vertices"),
-                        contents: bytemuck::cast_slice(&vertices),
-                        usage: vertex_usage,
-                    }),
-                    indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("indices"),
-                        contents: bytemuck::cast_slice(&p.indices),
-                        usage: wgpu::BufferUsages::INDEX,
-                    }),
-                    skin: skinned.then(|| {
-                        let skin: Vec<SkinVertex> = p
-                            .joints
-                            .iter()
-                            .zip(
-                                p.weights
-                                    .iter()
-                                    .chain(std::iter::repeat(&[1.0, 0.0, 0.0, 0.0])),
-                            )
-                            .map(|(joints, weights)| SkinVertex {
-                                joints: *joints,
-                                weights: *weights,
-                            })
-                            .collect();
-                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("skin"),
-                            contents: bytemuck::cast_slice(&skin),
-                            usage: vertex_usage,
-                        })
-                    }),
-                    index_count: u32::try_from(p.indices.len()).unwrap_or(u32::MAX),
-                    vertex_count: u32::try_from(p.positions.len()).unwrap_or(0),
-                    bounds: p.bounds,
-                }
-            })
-            .collect();
-        self.meshes.insert(id, primitives);
+    /// Поставить меш в очередь. На GPU он попадёт в [`Self::flush_uploads`].
+    pub fn upload_mesh(&mut self, id: AssetId<Mesh>, mesh: Box<Mesh>) {
+        self.pending.retain(|item| match item {
+            PendingUpload::Mesh(pending) => pending.id != id,
+            PendingUpload::Image { .. } => true,
+        });
+        self.meshes.remove(&id);
+        self.pending.push_back(PendingUpload::Mesh(PendingMesh {
+            id,
+            mesh,
+            next: 0,
+            built: Vec::new(),
+        }));
     }
 
-    pub fn upload_image(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        id: AssetId<Image>,
-        image: &Image,
-    ) {
-        let _zone = tracing::trace_span!("upload_image").entered();
-        self.textures
-            .insert(id, create_texture(device, queue, image));
+    /// Поставить текстуру в очередь. На GPU она попадёт в [`Self::flush_uploads`].
+    pub fn upload_image(&mut self, id: AssetId<Image>, image: Box<Image>) {
+        self.pending.retain(|item| match item {
+            PendingUpload::Image { id: queued, .. } => *queued != id,
+            PendingUpload::Mesh(_) => true,
+        });
+        self.textures.remove(&id);
+        self.pending.push_back(PendingUpload::Image { id, image });
+    }
+
+    /// Скопировать из очереди столько, сколько позволяет бюджет кадра.
+    /// Копии пишутся в `encoder` раньше отрисовки этого кадра.
+    pub fn flush_uploads(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder) {
+        let _zone = tracing::trace_span!("gpu_upload").entered();
+        let _ = device.poll(wgpu::PollType::Poll);
+        let budget = crate::upload::budget_bytes();
+        let mut spent = 0u64;
+        let compute_skin = self.skin.gpu.is_some();
+        loop {
+            let Some(item) = self.pending.pop_front() else {
+                break;
+            };
+            match item {
+                PendingUpload::Image { id, image } => {
+                    let cost = image.memory_size();
+                    if !crate::upload::fits(spent, cost, budget) {
+                        self.pending.push_front(PendingUpload::Image { id, image });
+                        break;
+                    }
+                    let texture = upload_image_staged(device, encoder, &mut self.staging, &image);
+                    self.textures.insert(id, texture);
+                    spent = spent.saturating_add(cost);
+                }
+                PendingUpload::Mesh(mut pending) => {
+                    while pending.next < pending.mesh.primitives.len() {
+                        let primitive = &pending.mesh.primitives[pending.next];
+                        let cost = primitive_copy_bytes(primitive);
+                        if !crate::upload::fits(spent, cost, budget) {
+                            self.pending.push_front(PendingUpload::Mesh(pending));
+                            self.log_upload_left(spent);
+                            return;
+                        }
+                        pending.built.push(write_primitive(
+                            &mut self.staging,
+                            device,
+                            encoder,
+                            primitive,
+                            compute_skin,
+                        ));
+                        pending.next += 1;
+                        spent = spent.saturating_add(cost);
+                    }
+                    self.meshes.insert(pending.id, pending.built);
+                }
+            }
+        }
+        self.log_upload_left(spent);
+    }
+
+    fn log_upload_left(&self, spent: u64) {
+        if self.pending.is_empty() {
+            return;
+        }
+        tracing::debug!(
+            "Заливка GPU: {spent} байт в этом кадре, в очереди {}",
+            self.pending.len()
+        );
+    }
+
+    /// Перед `submit`: закрыть пояс и вернуть его куски, когда GPU докопирует.
+    pub fn finish_uploads(&mut self, encoder: &wgpu::CommandEncoder) {
+        self.staging.finish_on_submit(encoder);
     }
 
     pub fn upload_material(
@@ -668,9 +704,17 @@ impl SceneRenderer {
     }
 
     pub fn remove_mesh(&mut self, id: AssetId<Mesh>) {
+        self.pending.retain(|item| match item {
+            PendingUpload::Mesh(pending) => pending.id != id,
+            PendingUpload::Image { .. } => true,
+        });
         self.meshes.remove(&id);
     }
     pub fn remove_image(&mut self, id: AssetId<Image>) {
+        self.pending.retain(|item| match item {
+            PendingUpload::Image { id: queued, .. } => *queued != id,
+            PendingUpload::Mesh(_) => true,
+        });
         self.textures.remove(&id);
     }
 
@@ -1945,6 +1989,119 @@ fn create_object_buffer(
     (buffer, bind_group)
 }
 
+fn primitive_copy_bytes(primitive: &Primitive) -> u64 {
+    let vertices = u64::try_from(primitive.positions.len()).unwrap_or(0)
+        * u64::try_from(std::mem::size_of::<Vertex>()).unwrap_or(0);
+    let indices = u64::try_from(primitive.indices.len()).unwrap_or(0) * 4;
+    let skin = if is_skinned(primitive) {
+        u64::try_from(primitive.positions.len()).unwrap_or(0)
+            * u64::try_from(std::mem::size_of::<SkinVertex>()).unwrap_or(0)
+    } else {
+        0
+    };
+    vertices + indices + skin
+}
+
+fn is_skinned(primitive: &Primitive) -> bool {
+    !primitive.joints.is_empty() && primitive.joints.len() == primitive.positions.len()
+}
+
+fn write_primitive(
+    staging: &mut crate::upload::Staging,
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    primitive: &Primitive,
+    compute_skin: bool,
+) -> GpuPrimitive {
+    let vertices: Vec<Vertex> = (0..primitive.positions.len())
+        .map(|i| Vertex {
+            position: primitive.positions[i],
+            normal: primitive.normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]),
+            uv: primitive.uvs.get(i).copied().unwrap_or_default(),
+        })
+        .collect();
+    let skinned = is_skinned(primitive);
+    let mut usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+    if compute_skin && skinned {
+        usage |= wgpu::BufferUsages::STORAGE;
+    }
+    let vertex_bytes: &[u8] = bytemuck::cast_slice(&vertices);
+    let vertices = staged_buffer(staging, device, encoder, "vertices", vertex_bytes, usage);
+    let index_bytes: &[u8] = bytemuck::cast_slice(&primitive.indices);
+    let indices = staged_buffer(
+        staging,
+        device,
+        encoder,
+        "indices",
+        index_bytes,
+        wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+    );
+    let skin = skinned.then(|| {
+        let skin: Vec<SkinVertex> = primitive
+            .joints
+            .iter()
+            .zip(
+                primitive
+                    .weights
+                    .iter()
+                    .chain(std::iter::repeat(&[1.0, 0.0, 0.0, 0.0])),
+            )
+            .map(|(joints, weights)| SkinVertex {
+                joints: *joints,
+                weights: *weights,
+            })
+            .collect();
+        staged_buffer(
+            staging,
+            device,
+            encoder,
+            "skin",
+            bytemuck::cast_slice(&skin),
+            usage,
+        )
+    });
+    GpuPrimitive {
+        vertices,
+        skin,
+        indices,
+        index_count: u32::try_from(primitive.indices.len()).unwrap_or(u32::MAX),
+        vertex_count: u32::try_from(primitive.positions.len()).unwrap_or(0),
+        bounds: primitive.bounds,
+    }
+}
+
+fn staged_buffer(
+    staging: &mut crate::upload::Staging,
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    label: &str,
+    bytes: &[u8],
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    let size = crate::upload::aligned_size(bytes.len());
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: size.get(),
+        usage,
+        mapped_at_creation: false,
+    });
+    staging.copy_buffer(encoder, &buffer, bytes);
+    buffer
+}
+
+fn upload_image_staged(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    staging: &mut crate::upload::Staging,
+    image: &Image,
+) -> GpuTexture {
+    if image.basis.is_empty() {
+        upload_rgba_staged(device, encoder, staging, image)
+    } else {
+        crate::ktx::upload_basis_staged(device, encoder, staging, image)
+    }
+}
+
 fn create_texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> GpuTexture {
     if image.basis.is_empty() {
         upload_rgba(device, queue, image)
@@ -1954,25 +2111,7 @@ fn create_texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> 
 }
 
 pub(crate) fn upload_rgba(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> GpuTexture {
-    let format = match image.color_space {
-        ColorSpace::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
-        ColorSpace::Linear => wgpu::TextureFormat::Rgba8Unorm,
-    };
-    let size = wgpu::Extent3d {
-        width: image.width,
-        height: image.height,
-        depth_or_array_layers: 1,
-    };
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("image"),
-        size,
-        mip_level_count: image.mip_level_count(),
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
+    let texture = rgba_texture(device, image);
     let levels = std::iter::once(&image.data).chain(image.mips.iter());
     for (level, data) in levels.enumerate() {
         let level = u32::try_from(level).unwrap_or(0);
@@ -1998,6 +2137,59 @@ pub(crate) fn upload_rgba(device: &wgpu::Device, queue: &wgpu::Queue, image: &Im
             },
         );
     }
+    gpu_texture(texture, image)
+}
+
+pub(crate) fn upload_rgba_staged(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    staging: &mut crate::upload::Staging,
+    image: &Image,
+) -> GpuTexture {
+    let texture = rgba_texture(device, image);
+    let levels = std::iter::once(&image.data).chain(image.mips.iter());
+    for (level, data) in levels.enumerate() {
+        let level = u32::try_from(level).unwrap_or(0);
+        let width = (image.width >> level).max(1);
+        let height = (image.height >> level).max(1);
+        staging.copy_texture(
+            encoder,
+            &texture,
+            level,
+            data,
+            width.saturating_mul(4),
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    gpu_texture(texture, image)
+}
+
+fn rgba_texture(device: &wgpu::Device, image: &Image) -> wgpu::Texture {
+    let format = match image.color_space {
+        ColorSpace::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+        ColorSpace::Linear => wgpu::TextureFormat::Rgba8Unorm,
+    };
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("image"),
+        size: wgpu::Extent3d {
+            width: image.width,
+            height: image.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: image.mip_level_count(),
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
+fn gpu_texture(texture: wgpu::Texture, image: &Image) -> GpuTexture {
     GpuTexture {
         view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
         bytes: image.memory_size(),
