@@ -35,6 +35,8 @@ cargo run -p sandbox -- --cvar sim.hz=30 --cvar render.mode=inline --cvar log.fi
 На Web — параметрами URL: `http://localhost:8000/?sim.hz=30&render.mode=inline`.
 
 GL-контекст — GLES 3.2, compute-шейдеры включены. Отдельного пути без compute нет.
+Меши и текстуры заливаются на GPU не больше `render.upload_budget_mb` мегабайт за кадр (8).
+`0` снимает ограничение. Один примитив или одна текстура больше бюджета уходит целиком.
 
 Сцена: `--cvar sandbox.scene=sponza` (`showcase`, `orcs`, `sponza`, `helmet`, `sprites`, `fx`).
 `orcs` — тысяча орков, пол и одно солнце с тенями. Скиннинг этой толпы — в вершинном шейдере:
@@ -62,6 +64,8 @@ F5 (или кнопка в окне «Статистика»). `help` — спи
 `physics.debug true` — показать коллайдеры, `physics.paused true` — остановить. В sandbox физика и звук
 включены в `sandbox.toml` (`physics.enabled`, `audio.enabled`). У крейта `engine` их нет в зависимостях
 по умолчанию: проект пишет `features = ["physics", "audio"]` и ставит те же CVar в `true`.
+Аллокатор: `features = ["mimalloc"]` ставит mimalloc вместо системного (native). На Web фича
+ничего не меняет.
 Выключить в витрине: `--cvar physics.enabled=false --cvar audio.enabled=false`. Команды при запуске:
 
 ```sh

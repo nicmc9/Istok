@@ -32,3 +32,4 @@
 - [Архитектура](docs/acrhitecture.md)
 - [План задач](docs/task.md)
 - [Крейты](docs/crates.md)
+- [Почему не Bevy](docs/bevy.md)
