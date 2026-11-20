@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use engine_core::sync::mailbox::{MailboxSender, mailbox};
+use engine_core::sync::mailbox::{Mailbox, MailboxSender, mailbox};
 use engine_core::sync::reply::{ReplyReceiver, reply};
 use engine_core::sync::triple_buffer::{Producer, triple_buffer};
 use engine_core::{
@@ -13,6 +13,7 @@ use engine_platform::{Duration, Instant, PlatformWindow, WindowSize};
 
 use crate::Color;
 use crate::command::{RenderCommand, Screenshot};
+use crate::events::RenderEvent;
 use crate::renderer::{Renderer, SharedStats};
 use crate::snapshot::FrameSnapshot;
 
@@ -144,6 +145,8 @@ pub struct RenderStats {
     pub gpu_bytes: u64,
     /// Есть ли compute. `Unknown`, пока GPU не создан.
     pub gpu_tier: crate::caps::GpuTier,
+    /// Сколько раз устройство GPU терялось и создавалось заново.
+    pub device_losses: u64,
 }
 
 /// Сторона главного потока: отправляет команды и снимки рендеру.
@@ -152,6 +155,10 @@ pub struct RenderStats {
 /// где объекты `wgpu` нельзя передавать между потоками.
 pub(crate) struct RenderFrontend {
     commands: MailboxSender<RenderCommand>,
+    /// Отказы рендера (потеря устройства, GPU не создался).
+    events: Mailbox<RenderEvent>,
+    /// Поток рендера упал: ждать от него ответов бессмысленно.
+    crashed: bool,
     pub(crate) snapshots: Producer<FrameSnapshot>,
     stats: Arc<SharedStats>,
     /// Создаётся при первом появлении окна: на Android для GLES нужен display окна.
@@ -177,6 +184,14 @@ pub fn request_screenshot(world: &mut World) -> ScreenshotReceiver {
         .non_send_mut::<RenderFrontend>()
         .send(RenderCommand::Screenshot { reply: tx });
     rx
+}
+
+/// Потерять устройство GPU своего рендера (отладка и тесты). Рендер создаст новое,
+/// придёт [`RenderEvent::DeviceLost`]. То же из консоли: `render.debug_lose_device true`.
+pub fn debug_lose_device(world: &mut World) {
+    world
+        .non_send_mut::<RenderFrontend>()
+        .send(RenderCommand::LoseDevice);
 }
 
 /// GL-контекст только GLES 3.2. Переменная окружения не может опустить его до 3.0.
@@ -234,7 +249,8 @@ fn register_cvars(app: &mut App) {
         .register_cvar(&crate::lights::RENDER_LOCAL_SHADOW_SIZE)
         .register_cvar(&crate::skin::RENDER_SKIN_COMPUTE)
         .register_cvar(&crate::skin::RENDER_SKIN_BUDGET_MB)
-        .register_cvar(&crate::upload::RENDER_UPLOAD_BUDGET_MB);
+        .register_cvar(&crate::upload::RENDER_UPLOAD_BUDGET_MB)
+        .register_cvar(&crate::events::RENDER_DEBUG_LOSE_DEVICE);
 }
 
 impl Plugin for RenderPlugin {
@@ -252,9 +268,10 @@ impl Plugin for RenderPlugin {
             RENDER_MODE.get()
         };
         let (commands_tx, commands_rx) = mailbox("render");
+        let (events_tx, events_rx) = mailbox("render-events");
         let (producer, consumer) = triple_buffer(&FrameSnapshot::default());
         let stats = Arc::new(SharedStats::default());
-        let renderer = Renderer::new(commands_rx, consumer, Arc::clone(&stats));
+        let renderer = Renderer::new(commands_rx, events_tx, consumer, Arc::clone(&stats));
 
         let backend = match mode {
             #[cfg(not(target_arch = "wasm32"))]
@@ -273,6 +290,8 @@ impl Plugin for RenderPlugin {
 
         let frontend = RenderFrontend {
             commands: commands_tx,
+            events: events_rx,
+            crashed: false,
             snapshots: producer,
             stats,
             instance: None,
@@ -298,13 +317,14 @@ impl Plugin for RenderPlugin {
                 server.register_embedded(&format!("engine://{name}"), source.as_bytes());
             }
         }
+        app.add_message::<RenderEvent>();
         app.init_resource::<ClearColor>()
             .init_resource::<RenderStats>()
             .init_resource::<crate::DebugDraw>()
             .init_resource::<crate::Ui>()
             .add_systems(Stage::PreUpdate, crate::ui::ui_begin)
             .add_systems(Stage::PostUpdate, crate::debug_draw::builtin_debug_draw)
-            .add_systems(Stage::First, update_stats)
+            .add_systems(Stage::First, (receive_render_events, update_stats).chain())
             .add_systems(Stage::Startup, load_engine_shaders)
             .add_systems(
                 Stage::Extract,
@@ -404,6 +424,9 @@ impl RenderFrontend {
     /// Уход в фон: ждём, пока рендер отпустит surface. Только после этого
     /// можно вернуть управление ОС — она уничтожит окно.
     fn release_surface(&mut self) {
+        if self.crashed {
+            return;
+        }
         let (reply_tx, reply_rx) = reply();
         self.send(RenderCommand::SurfaceLost { reply: reply_tx });
         // В режиме Inline рендер — это мы сами: выполняем команду прямо здесь
@@ -433,6 +456,28 @@ impl RenderFrontend {
         }
     }
 
+    /// Поток рендера завершился сам, без `Shutdown`: паника. `Some(причина)` — один раз.
+    fn take_crash(&mut self) -> Option<String> {
+        match &mut self.backend {
+            #[cfg(not(target_arch = "wasm32"))]
+            Backend::Threaded(handle) => {
+                if !handle
+                    .as_ref()
+                    .is_some_and(std::thread::JoinHandle::is_finished)
+                {
+                    return None;
+                }
+                let result = handle.take()?.join();
+                self.crashed = true;
+                Some(match result {
+                    Ok(()) => "поток рендера завершился без команды".to_owned(),
+                    Err(payload) => panic_message(payload.as_ref()),
+                })
+            }
+            Backend::Inline(_) => None,
+        }
+    }
+
     /// В режиме Inline сразу выполняет накопившиеся команды.
     // На Web у Backend единственный вариант Inline, и `if let` всегда срабатывает
     #[cfg_attr(target_arch = "wasm32", allow(irrefutable_let_patterns))]
@@ -451,6 +496,57 @@ fn render_inline(mut frontend: NonSendMut<RenderFrontend>) {
         renderer.poll_init();
         renderer.render_frame();
     }
+}
+
+/// Текст паники: `panic!("...")` кладёт `&str` или `String`.
+#[cfg(not(target_arch = "wasm32"))]
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "паника без текста".to_owned())
+}
+
+/// Отказы рендера → сообщения ECS. После потери устройства всё, что рендер держал на GPU,
+/// отправляется заново. Упавший поток рендера завершает приложение: иначе логика
+/// крутилась бы дальше под застывшей картинкой.
+#[allow(clippy::too_many_arguments)] // система ECS: параметры — запрашиваемые данные
+fn receive_render_events(
+    mut frontend: NonSendMut<RenderFrontend>,
+    meshes: Res<engine_assets::Assets<engine_assets::formats::Mesh>>,
+    images: Res<engine_assets::Assets<engine_assets::formats::Image>>,
+    materials: Res<engine_assets::Assets<engine_assets::formats::Material>>,
+    atlas: Option<ResMut<engine_text::GlyphAtlas>>,
+    mut out: MessageWriter<RenderEvent>,
+    mut control: ResMut<AppControl>,
+    mut stats: ResMut<RenderStats>,
+) {
+    if crate::events::RENDER_DEBUG_LOSE_DEVICE.get() {
+        crate::events::RENDER_DEBUG_LOSE_DEVICE.set(false);
+        frontend.send(RenderCommand::LoseDevice);
+    }
+    let mut events = Vec::new();
+    while let Some(event) = frontend.events.try_recv() {
+        events.push(event);
+    }
+    if let Some(reason) = frontend.take_crash() {
+        tracing::error!("Поток рендера упал: {reason}. Приложение завершается");
+        control.request_exit();
+        events.push(RenderEvent::Crashed(reason));
+    }
+    let losses = events
+        .iter()
+        .filter(|event| matches!(event, RenderEvent::DeviceLost(_)))
+        .count();
+    if losses > 0 {
+        stats.device_losses += u64::try_from(losses).unwrap_or(u64::MAX);
+        crate::extract::resend_assets(&frontend, &meshes, &images, &materials);
+        if let Some(mut atlas) = atlas {
+            atlas.invalidate();
+        }
+    }
+    out.write_batch(events);
 }
 
 fn update_stats(frontend: NonSend<RenderFrontend>, mut stats: ResMut<RenderStats>) {

@@ -82,6 +82,32 @@ pub(crate) fn sync_assets(
     }
 }
 
+/// Все загруженные меши, текстуры и материалы — рендеру заново (после потери устройства).
+pub(crate) fn resend_assets(
+    frontend: &RenderFrontend,
+    meshes: &Assets<Mesh>,
+    images: &Assets<Image>,
+    materials: &Assets<Material>,
+) {
+    let mut count = 0usize;
+    for (id, image) in images.iter_loaded() {
+        frontend.send(RenderCommand::UploadImage(id, Box::new(image.clone())));
+        count += 1;
+    }
+    for (id, mesh) in meshes.iter_loaded() {
+        frontend.send(RenderCommand::UploadMesh(id, Box::new(mesh.clone())));
+        count += 1;
+    }
+    for (id, material) in materials.iter_loaded() {
+        frontend.send(RenderCommand::UploadMaterial(
+            id,
+            MaterialData::from(material),
+        ));
+        count += 1;
+    }
+    tracing::info!("Рендеру заново отправлено ресурсов: {count}");
+}
+
 /// Максимум костей на скелет — размер массива в шейдере.
 pub(crate) const MAX_JOINTS: usize = 256;
 

@@ -14,6 +14,7 @@ mod color;
 mod command;
 mod debug_draw;
 mod decals;
+mod events;
 mod extract;
 mod frontend;
 mod gpu;
@@ -42,10 +43,11 @@ pub use command::Screenshot;
 pub use debug_draw::{DEBUG_AXES, DEBUG_BOUNDS, DEBUG_GRID, DebugDraw};
 /// egui для своих окон: `engine::render::egui::Window::new(..)`.
 pub use egui;
+pub use events::{RENDER_DEBUG_LOSE_DEVICE, RenderEvent};
 pub use frontend::{
     ClearColor, RENDER_BACKEND, RENDER_HEADLESS, RENDER_HEADLESS_HEIGHT, RENDER_HEADLESS_WIDTH,
     RENDER_MODE, RenderMode, RenderPlugin, RenderStats, SCREENSHOT_EXIT, SCREENSHOT_FRAME,
-    SCREENSHOT_PATH, ScreenshotReceiver, request_screenshot,
+    SCREENSHOT_PATH, ScreenshotReceiver, debug_lose_device, request_screenshot,
 };
 pub use lights::RENDER_LOCAL_SHADOW_SIZE;
 pub use post::{

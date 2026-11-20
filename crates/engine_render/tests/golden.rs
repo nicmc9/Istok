@@ -16,6 +16,13 @@ const WIDTH: u32 = 320;
 const HEIGHT: u32 = 240;
 
 fn render_scene(model: &str) -> Option<engine_render::Screenshot> {
+    let mut app = scene_app(model)?;
+    Some(screenshot(&mut app))
+}
+
+/// Приложение без окна с моделью, камерой и солнцем; модель уже на экране.
+/// `None` — нет GPU.
+fn scene_app(model: &str) -> Option<App> {
     let mut app = App::new();
     {
         let mut cvars = app.world_mut().resource_mut::<CVars>();
@@ -67,11 +74,15 @@ fn render_scene(model: &str) -> Option<engine_render::Screenshot> {
         eprintln!("Пропуск: нет GPU (кадр не нарисован)");
         return None;
     }
+    Some(app)
+}
+
+fn screenshot(app: &mut App) -> engine_render::Screenshot {
     let receiver = request_screenshot(app.world_mut());
     for _ in 0..100 {
         app.update();
         if let Some(result) = receiver.try_get() {
-            return Some(result.expect("скриншот"));
+            return result.expect("скриншот");
         }
     }
     panic!("скриншот не получен");
@@ -112,6 +123,46 @@ fn compare(name: &str, shot: &engine_render::Screenshot) {
             share * 100.0
         );
     }
+}
+
+/// Б-08: устройство GPU потеряно — рендер создаёт новое, ресурсы приходят заново,
+/// картинка та же.
+#[test]
+fn device_loss_restores_the_frame() {
+    let Some(mut app) = scene_app("models/khronos/BoxTextured/BoxTextured.glb") else {
+        return;
+    };
+    let before = screenshot(&mut app);
+    // Через команду своему рендеру, а не CVar: тесты идут параллельно в одном процессе
+    engine_render::debug_lose_device(app.world_mut());
+    for _ in 0..2000 {
+        app.update();
+        let stats = *app.world().resource::<RenderStats>();
+        if stats.device_losses > 0 && stats.drawn > 0 && stats.gpu_textures > 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let stats = *app.world().resource::<RenderStats>();
+    assert_eq!(
+        stats.device_losses, 1,
+        "потеря устройства не дошла до главного потока"
+    );
+    assert!(stats.gpu_textures > 0, "текстуры не вернулись на GPU");
+    let after = screenshot(&mut app);
+    assert_eq!(before.data.len(), after.data.len());
+    let different = before
+        .data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(after.data.as_chunks::<4>().0)
+        .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 8))
+        .count();
+    assert!(
+        different * 200 <= before.data.len() / 4,
+        "после потери устройства отличается {different} пикселей"
+    );
 }
 
 #[test]

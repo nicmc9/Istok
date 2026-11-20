@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 
 /// Устройство GPU: всё, что нужно для работы с видеокартой.
@@ -8,6 +9,55 @@ pub(crate) struct Gpu {
     pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    /// Причина потери устройства. Пишет колбэк wgpu (из любого потока), читает рендер.
+    pub lost: LostFlag,
+}
+
+/// Устройство потеряно: `Some(причина)`. У каждого устройства свой флаг, поэтому колбэк
+/// старого устройства (он срабатывает и при его уничтожении) новое не трогает.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LostFlag(Arc<Mutex<Option<String>>>);
+
+impl LostFlag {
+    pub fn set(&self, reason: String) {
+        let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        slot.get_or_insert(reason);
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+
+    pub fn reason(&self) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Колбэк потери и обработчик ошибок. После потери любой вызов wgpu даёт ошибку
+/// «устройство недействительно»; обработчик по умолчанию на ней паникует, а нам нужно
+/// дожить до начала следующего кадра и пересоздать устройство.
+fn watch_device(device: &wgpu::Device) -> LostFlag {
+    let lost = LostFlag::default();
+    let flag = lost.clone();
+    device.set_device_lost_callback(move |reason, message| {
+        flag.set(format!("{reason:?}: {message}"));
+    });
+    let flag = lost.clone();
+    device.on_uncaptured_error(Arc::new(move |error| {
+        if flag.is_set() {
+            tracing::debug!("wgpu после потери устройства: {error}");
+            return;
+        }
+        // Как обработчик по умолчанию: ошибка валидации — баг в коде рендера
+        panic!("wgpu: {error}");
+    }));
+    lost
 }
 
 /// Асинхронная инициализация GPU.
@@ -61,10 +111,12 @@ impl GpuInit {
                 })
                 .await
                 .map_err(|e| format!("устройство: {e}"))?;
+            let lost = watch_device(&device);
             Ok(Gpu {
                 adapter,
                 device,
                 queue,
+                lost,
             })
         };
         Self {

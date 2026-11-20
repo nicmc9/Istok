@@ -175,6 +175,20 @@ impl<T: Asset> Assets<T> {
         self.len() == 0
     }
 
+    /// Загруженные ресурсы с их id, без заглушек. Нужен, чтобы отправить всё заново —
+    /// например, рендеру после потери устройства GPU.
+    pub fn iter_loaded(&self) -> impl Iterator<Item = (AssetId<T>, &T)> {
+        self.slots.iter().enumerate().filter_map(|(index, slot)| {
+            let slot = slot.as_ref()?;
+            if !slot.status.is_ready() {
+                return None;
+            }
+            let value = slot.value.as_ref()?;
+            let index = u32::try_from(index).ok()?;
+            Some((AssetId::new(index, slot.generation), value))
+        })
+    }
+
     fn slot(&self, id: AssetId<T>) -> Option<&Slot<T>> {
         let slot = self.slots.get(id.index as usize)?.as_ref()?;
         (slot.generation == id.generation).then_some(slot)

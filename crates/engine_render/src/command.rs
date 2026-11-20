@@ -98,6 +98,8 @@ pub(crate) enum RenderCommand {
         name: String,
         source: String,
     },
+    /// Отладка: потерять устройство GPU (`device.destroy()`).
+    LoseDevice,
     /// Снимок следующего кадра.
     Screenshot {
         reply: ReplySender<Result<Screenshot, String>>,
@@ -123,6 +125,7 @@ impl std::fmt::Debug for RenderCommand {
             Self::UiTextures(_) => write!(f, "UiTextures"),
             Self::TextAtlas(_) => write!(f, "TextAtlas"),
             Self::UpdateShader { name, .. } => write!(f, "UpdateShader({name})"),
+            Self::LoseDevice => write!(f, "LoseDevice"),
             Self::Screenshot { .. } => write!(f, "Screenshot"),
             Self::Shutdown => write!(f, "Shutdown"),
         }

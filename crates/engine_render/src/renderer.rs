@@ -1,13 +1,14 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
-use engine_core::sync::mailbox::Mailbox;
+use engine_core::sync::mailbox::{Mailbox, MailboxSender};
 use engine_core::sync::reply::ReplySender;
 use engine_core::sync::triple_buffer::Consumer;
 use engine_platform::{Instant, WindowSize};
 
 use crate::caps::GpuCaps;
 use crate::command::{RenderCommand, Screenshot};
+use crate::events::RenderEvent;
 use crate::gpu::{Gpu, GpuInit};
 use crate::graph::{PassKind, RenderGraph, TextureDesc};
 use crate::post::{
@@ -70,6 +71,10 @@ struct Target {
 /// код одинаковый, отличается только то, кто вызывает методы.
 pub(crate) struct Renderer {
     commands: Mailbox<RenderCommand>,
+    /// Отказы, о которых рендер сообщает главному потоку сам.
+    events: MailboxSender<RenderEvent>,
+    /// Нужен, чтобы создать устройство заново после потери.
+    instance: Option<wgpu::Instance>,
     snapshots: Consumer<FrameSnapshot>,
     stats: Arc<SharedStats>,
     gpu: Option<Gpu>,
@@ -100,6 +105,9 @@ pub(crate) struct Renderer {
     shader_sources: std::collections::HashMap<String, String>,
     /// Текстуры интерфейса, которые нужно освободить после отрисовки кадра.
     ui_free: Vec<egui::TextureId>,
+    /// Копия текстур интерфейса целиком. egui присылает только изменения, а после потери
+    /// устройства атлас шрифта нужно залить заново.
+    ui_images: std::collections::HashMap<egui::TextureId, egui::epaint::ImageDelta>,
 }
 
 fn publish_gpu(stats: &SharedStats, scene: &SceneRenderer) {
@@ -117,11 +125,14 @@ fn publish_gpu(stats: &SharedStats, scene: &SceneRenderer) {
 impl Renderer {
     pub fn new(
         commands: Mailbox<RenderCommand>,
+        events: MailboxSender<RenderEvent>,
         snapshots: Consumer<FrameSnapshot>,
         stats: Arc<SharedStats>,
     ) -> Self {
         Self {
             commands,
+            events,
+            instance: None,
             snapshots,
             stats,
             gpu: None,
@@ -138,6 +149,7 @@ impl Renderer {
             particles: None,
             decals: None,
             ui_free: Vec::new(),
+            ui_images: std::collections::HashMap::new(),
             pool: crate::graph::TexturePool::default(),
             timer: None,
             shader_sources: crate::shaders::embedded_sources(),
@@ -190,6 +202,7 @@ impl Renderer {
                 if self.gpu.is_none() && self.init.is_none() {
                     self.init = Some(GpuInit::start(&instance, Some(&surface)));
                 }
+                self.instance = Some(instance);
                 self.target = Some(Target {
                     kind: TargetKind::Surface {
                         surface,
@@ -202,6 +215,7 @@ impl Renderer {
             }
             RenderCommand::InitHeadless { instance, size } => {
                 self.init = Some(GpuInit::start(&instance, None));
+                self.instance = Some(instance);
                 self.target = Some(Target {
                     kind: TargetKind::Offscreen { texture: None },
                     size,
@@ -226,6 +240,13 @@ impl Renderer {
                 self.configure();
             }
             RenderCommand::Screenshot { reply } => self.screenshots.push(reply),
+            RenderCommand::LoseDevice => {
+                if let Some(gpu) = &self.gpu {
+                    // Флаг раньше destroy: ошибки вызовов до проверки в начале кадра — ожидаемые
+                    gpu.lost.set("отладка: render.debug_lose_device".to_owned());
+                    gpu.device.destroy();
+                }
+            }
             RenderCommand::UpdateShader { name, source } => self.update_shader(name, source),
             RenderCommand::Shutdown => return Flow::Exit,
             resource => self.apply_resource(resource),
@@ -247,12 +268,16 @@ impl Renderer {
             RenderCommand::RemoveMaterial(id) => scene.remove_material(id),
             RenderCommand::UiTextures(delta) => {
                 let delta = &delta.0;
-                if let Some(ui) = &mut self.ui {
-                    for (id, images) in &delta.set {
-                        for image in images {
+                for (id, images) in &delta.set {
+                    for image in images {
+                        if let Some(ui) = &mut self.ui {
                             ui.update_texture(&gpu.device, &gpu.queue, *id, image);
                         }
+                        remember_ui_texture(&mut self.ui_images, *id, image);
                     }
+                }
+                for id in &delta.free {
+                    self.ui_images.remove(id);
                 }
                 // Обёртка UiTextures пометит изменения обработанными при уничтожении
                 self.ui_free.extend(delta.free.iter().copied());
@@ -303,8 +328,9 @@ impl Renderer {
         }
     }
 
-    /// Проверяет асинхронную инициализацию GPU.
+    /// Проверяет асинхронную инициализацию GPU и не потеряно ли готовое устройство.
     pub fn poll_init(&mut self) {
+        self.check_device();
         let Some(init) = &mut self.init else { return };
         match init.poll() {
             None => {}
@@ -329,8 +355,60 @@ impl Renderer {
             Some(Err(error)) => {
                 tracing::error!("Не удалось инициализировать GPU: {error}");
                 self.init = None;
+                self.events.send(RenderEvent::GpuFailed(error));
             }
         }
+    }
+
+    /// Устройство потеряно — сносим всё, что на нём создано, и создаём новое. Главный поток
+    /// по [`RenderEvent::DeviceLost`] пришлёт ресурсы заново, а до тех пор они копятся в
+    /// `pending`, как при первом запуске.
+    fn check_device(&mut self) {
+        let Some(gpu) = &self.gpu else { return };
+        let Some(reason) = gpu.lost.reason() else {
+            return;
+        };
+        tracing::error!("Устройство GPU потеряно ({reason}), создаём новое");
+        self.scene = None;
+        self.post = None;
+        self.text = None;
+        self.sprites = None;
+        self.particles = None;
+        self.decals = None;
+        self.ui = None;
+        self.timer = None;
+        self.pool = crate::graph::TexturePool::default();
+        self.ui_free.clear();
+        for reply in self.screenshots.drain(..) {
+            reply.send(Err("устройство GPU потеряно".to_owned()));
+        }
+        self.gpu = None;
+        self.caps = GpuCaps::default();
+        for counter in [
+            &self.stats.gpu_meshes,
+            &self.stats.gpu_textures,
+            &self.stats.gpu_bytes,
+        ] {
+            counter.store(0, Ordering::Relaxed);
+        }
+        self.stats.gpu_tier.store(0, Ordering::Relaxed);
+        let surface = self.target.as_mut().and_then(|target| {
+            target.view_format = None;
+            match &mut target.kind {
+                TargetKind::Surface { surface, config } => {
+                    *config = None;
+                    Some(&*surface)
+                }
+                TargetKind::Offscreen { texture } => {
+                    *texture = None;
+                    None
+                }
+            }
+        });
+        if let Some(instance) = &self.instance {
+            self.init = Some(GpuInit::start(instance, surface));
+        }
+        self.events.send(RenderEvent::DeviceLost(reason));
     }
 
     /// (Пере)настраивает цель отрисовки под текущий размер.
@@ -481,6 +559,12 @@ impl Renderer {
             view_format,
             egui_wgpu::RendererOptions::default(),
         ));
+        // Интерфейс после потери устройства: egui не пришлёт атлас шрифта заново
+        if let (Some(ui), Some(gpu)) = (&mut self.ui, &self.gpu) {
+            for (id, image) in &self.ui_images {
+                ui.update_texture(&gpu.device, &gpu.queue, *id, image);
+            }
+        }
         // Ресурсы, пришедшие до готовности GPU
         for command in std::mem::take(&mut self.pending) {
             self.apply_resource(command);
@@ -673,6 +757,36 @@ fn submit_present(
     }
     if let (Some(timer), Some(slot)) = (timer, timer_slot) {
         timer.after_submit(slot);
+    }
+}
+
+/// Обновить копию текстуры интерфейса: целиком или прямоугольником внутри.
+fn remember_ui_texture(
+    images: &mut std::collections::HashMap<egui::TextureId, egui::epaint::ImageDelta>,
+    id: egui::TextureId,
+    delta: &egui::epaint::ImageDelta,
+) {
+    let Some([x, y]) = delta.pos else {
+        images.insert(id, delta.clone());
+        return;
+    };
+    let Some(full) = images.get_mut(&id) else {
+        return;
+    };
+    let egui::ImageData::Color(target) = &mut full.image;
+    let egui::ImageData::Color(patch) = &delta.image;
+    let target = Arc::make_mut(target);
+    let [width, _] = target.size;
+    let [patch_width, patch_height] = patch.size;
+    for row in 0..patch_height {
+        let dst = (y + row) * width + x;
+        let src = row * patch_width;
+        if let (Some(dst), Some(src)) = (
+            target.pixels.get_mut(dst..dst + patch_width),
+            patch.pixels.get(src..src + patch_width),
+        ) {
+            dst.copy_from_slice(src);
+        }
     }
 }
 

@@ -168,7 +168,13 @@ impl GlyphAtlas {
             tracing::info!("Атлас глифов: {} → {size}²", self.size);
         }
         self.size = size;
-        self.packer = ShelfPacker::new(size);
+        self.invalidate();
+    }
+
+    /// Забыть все глифы и пересоздать текстуру того же размера. Вёрстка устаревает и
+    /// повторяется. Нужен, когда текстура на GPU пропала (потеря устройства).
+    pub fn invalidate(&mut self) {
+        self.packer = ShelfPacker::new(self.size);
         self.slots.clear();
         self.updates.clear();
         self.reset = true;
